@@ -1,0 +1,37 @@
+services:
+  dashboard:
+    build:
+      context: .
+    image: cc-switch-dashboard:local
+    container_name: cc-switch-dashboard
+    restart: "no"
+    init: true
+    user: "${DASHBOARD_UID:-501}:${DASHBOARD_GID:-20}"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - "${DASHBOARD_BIND_IP:-127.0.0.1}:8787:8787"
+    environment:
+      CC_SWITCH_DB: /data/cc-switch.db
+      CODEXBAR_SNAPSHOT: /provider-data/codexbar-providers.json
+      TAILSCALE_SNAPSHOT: /provider-data/tailscale-status.json
+      CLASH_VERGE_SNAPSHOT: /provider-data/clash-verge-status.json
+      OPENROUTER_SNAPSHOT: /provider-data/openrouter-usage.json
+      LIVE_ACTIVITY_SNAPSHOT: /provider-data/ai-live-activity.json
+      DASHBOARD_REFRESH_SECONDS: "8"
+    volumes:
+      - "${CC_SWITCH_DB_PATH:?Set CC_SWITCH_DB_PATH in .env}:/data/cc-switch.db:ro"
+      - "${CODEXBAR_SNAPSHOT_DIR:?Set CODEXBAR_SNAPSHOT_DIR in .env}:/provider-data:ro"
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/api/v1/health', timeout=2).read()"
+      interval: 20s
+      timeout: 3s
+      start_period: 5s
+      retries: 3

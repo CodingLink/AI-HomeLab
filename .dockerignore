@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+.coverage
+.env
+.git/
+tests/
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.log
+*.pid
+codexbar-providers.json
+tailscale-status.json
+clash-verge-status.json
+openrouter-usage.json
+ai-live-activity.json

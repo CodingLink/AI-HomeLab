@@ -1,0 +1,443 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import signal
+import subprocess
+import sys
+import threading
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Dict, Optional
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from app.clash_verge_status import ClashVergeCollector  # noqa: E402
+from app.openrouter_usage import OpenRouterCollector  # noqa: E402
+from app.live_activity import (  # noqa: E402
+    POLL_INTERVAL_SECONDS as LIVE_POLL_INTERVAL_SECONDS,
+    LiveActivityCollector,
+)
+from app.provider_quotas import (  # noqa: E402
+    REFRESH_INTERVAL_SECONDS,
+    CodexBarCollector,
+)
+from app.tailscale_status import TailscaleCollector  # noqa: E402
+
+
+DATA_DIR = Path.home() / "Library" / "Application Support" / "HomeDash"
+SNAPSHOT_PATH = DATA_DIR / "codexbar-providers.json"
+TAILSCALE_SNAPSHOT_PATH = DATA_DIR / "tailscale-status.json"
+CLASH_VERGE_SNAPSHOT_PATH = DATA_DIR / "clash-verge-status.json"
+OPENROUTER_SNAPSHOT_PATH = DATA_DIR / "openrouter-usage.json"
+LIVE_ACTIVITY_SNAPSHOT_PATH = DATA_DIR / "ai-live-activity.json"
+PID_PATH = DATA_DIR / "codexbar-collector.pid"
+LOG_PATH = DATA_DIR / "codexbar-collector.log"
+LOG_BACKUP_PATH = DATA_DIR / "codexbar-collector.log.1"
+LOG_MAX_BYTES = 1024 * 1024
+SCRIPT_PATH = Path(__file__).resolve()
+
+
+def ensure_data_dir() -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(DATA_DIR, 0o700)
+
+
+def read_pid() -> Optional[int]:
+    try:
+        value = int(PID_PATH.read_text(encoding="utf-8").strip())
+    except (OSError, TypeError, ValueError):
+        return None
+    return value if value > 1 else None
+
+
+def process_command(pid: int) -> str:
+    try:
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=2,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def is_collector_process(pid: Optional[int]) -> bool:
+    if not pid:
+        return False
+    command = process_command(pid)
+    return bool(command and str(SCRIPT_PATH) in command and "_run" in command)
+
+
+def write_pid(pid: int) -> None:
+    ensure_data_dir()
+    temporary = PID_PATH.with_suffix(".pid.tmp")
+    temporary.write_text(f"{pid}\n", encoding="utf-8")
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, PID_PATH)
+    os.chmod(PID_PATH, 0o600)
+
+
+def remove_own_pid(pid: int) -> None:
+    if read_pid() != pid:
+        return
+    try:
+        PID_PATH.unlink()
+    except OSError:
+        pass
+
+
+def write_collector_log(message: str) -> None:
+    """Append one sanitized line while keeping the collector log bounded."""
+    ensure_data_dir()
+    timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    entry = f"{timestamp} {message}\n"
+    entry_size = len(entry.encode("utf-8"))
+    try:
+        current_size = LOG_PATH.stat().st_size
+    except OSError:
+        current_size = 0
+
+    try:
+        if current_size and current_size + entry_size > LOG_MAX_BYTES:
+            os.replace(LOG_PATH, LOG_BACKUP_PATH)
+            os.chmod(LOG_BACKUP_PATH, 0o600)
+        with LOG_PATH.open("a", encoding="utf-8") as handle:
+            handle.write(entry)
+        os.chmod(LOG_PATH, 0o600)
+    except OSError:
+        # A logging failure must not interrupt snapshot collection.
+        pass
+
+
+def collect_codexbar_once(quiet: bool = False) -> bool:
+    try:
+        snapshot = CodexBarCollector().collect_to_path(SNAPSHOT_PATH)
+    except Exception as exc:
+        if not quiet:
+            print(f"CodexBar collection failed ({type(exc).__name__}).")
+        return False
+    if not quiet:
+        counts = {"live": 0, "stale": 0, "unavailable": 0}
+        for provider in snapshot["providers"]:
+            status = provider.get("status", "unavailable")
+            counts[status] = counts.get(status, 0) + 1
+        print(
+            "Wrote sanitized snapshot: "
+            f"{len(snapshot['providers'])} providers, "
+            f"{counts['live']} live, {counts['stale']} stale, "
+            f"{counts['unavailable']} unavailable."
+        )
+    return True
+
+
+def collect_tailscale_once(quiet: bool = False) -> bool:
+    try:
+        snapshot = TailscaleCollector().collect_to_path(TAILSCALE_SNAPSHOT_PATH)
+    except Exception as exc:
+        if not quiet:
+            print(f"Tailscale collection failed ({type(exc).__name__}).")
+        return False
+    is_live = snapshot.get("status") == "live"
+    if not quiet:
+        connection = snapshot.get("connection", {})
+        derp = snapshot.get("derp") or {}
+        status = connection.get("status", "unavailable")
+        transport = connection.get("transport", "unknown")
+        derp_code = str(derp.get("code", "—")).upper()
+        latency = derp.get("latencyMs")
+        latency_text = f"{latency:.1f} ms" if isinstance(latency, (int, float)) else "—"
+        freshness = "live" if is_live else snapshot.get("status", "unavailable")
+        print(
+            "Wrote sanitized Tailscale snapshot: "
+            f"{status}, {transport}, DERP {derp_code}, {latency_text}, {freshness}."
+        )
+    return is_live
+
+
+def collect_clash_verge_once(quiet: bool = False) -> bool:
+    try:
+        snapshot = ClashVergeCollector().collect_to_path(CLASH_VERGE_SNAPSHOT_PATH)
+    except Exception as exc:
+        if not quiet:
+            print(f"Clash Verge collection failed ({type(exc).__name__}).")
+        return False
+    is_live = snapshot.get("status") == "live"
+    if not quiet:
+        status = snapshot.get("proxy", {}).get("status", "unavailable")
+        freshness = "live" if is_live else snapshot.get("status", "unavailable")
+        print(
+            "Wrote sanitized Clash Verge snapshot: "
+            f"PROXY {status}, {freshness}."
+        )
+    return is_live
+
+
+def collect_openrouter_once(quiet: bool = False) -> bool:
+    try:
+        snapshot = OpenRouterCollector().collect_to_path(OPENROUTER_SNAPSHOT_PATH)
+    except Exception as exc:
+        if not quiet:
+            print(f"OpenRouter collection failed ({type(exc).__name__}).")
+        return False
+    credits_status = snapshot.get("credits", {}).get("status", "unavailable")
+    activity = snapshot.get("activity", {})
+    activity_status = activity.get("status", "unavailable")
+    if not quiet:
+        model_count = activity.get("summary", {}).get("modelCount", 0)
+        print(
+            "Wrote sanitized OpenRouter snapshot: "
+            f"credits {credits_status}, activity {activity_status}, "
+            f"{model_count} models."
+        )
+    return credits_status == "live" and activity_status == "live"
+
+
+def collect_live_activity_once(
+    quiet: bool = False,
+    collector: Optional[LiveActivityCollector] = None,
+) -> bool:
+    try:
+        snapshot = (collector or LiveActivityCollector()).collect_to_path(
+            LIVE_ACTIVITY_SNAPSHOT_PATH
+        )
+    except Exception as exc:
+        if not quiet:
+            print(f"Live activity collection failed ({type(exc).__name__}).")
+        return False
+    if not quiet:
+        enabled = [app for app, value in snapshot["routing"].items() if value]
+        print(
+            "Wrote sanitized live activity snapshot: "
+            f"{len(snapshot['activities'])} active, "
+            f"routing {', '.join(enabled) if enabled else 'disabled'}."
+        )
+    return True
+
+
+def collect_once(quiet: bool = False) -> Dict[str, bool]:
+    return {
+        "codexbar": collect_codexbar_once(quiet=quiet),
+        "tailscale": collect_tailscale_once(quiet=quiet),
+        "clash-verge": collect_clash_verge_once(quiet=quiet),
+        "openrouter": collect_openrouter_once(quiet=quiet),
+        "live-activity": collect_live_activity_once(quiet=quiet),
+    }
+
+
+def start_collector() -> int:
+    ensure_data_dir()
+    existing_pid = read_pid()
+    if is_collector_process(existing_pid):
+        print(f"HomeDash collector is already running (pid {existing_pid}).")
+        return 0
+    if existing_pid:
+        remove_own_pid(existing_pid)
+
+    collect_once()
+
+    process = subprocess.Popen(
+        [sys.executable, str(SCRIPT_PATH), "_run"],
+        cwd=str(PROJECT_ROOT),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+        close_fds=True,
+    )
+    write_pid(process.pid)
+    print(f"HomeDash collector started (pid {process.pid}).")
+    return 0
+
+
+def stop_collector() -> int:
+    pid = read_pid()
+    if not is_collector_process(pid):
+        if pid:
+            remove_own_pid(pid)
+        print("HomeDash collector is not running.")
+        return 0
+
+    try:
+        os.killpg(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        remove_own_pid(pid)
+        print("HomeDash collector is not running.")
+        return 0
+    except OSError:
+        print("HomeDash collector could not be stopped.")
+        return 1
+
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and is_collector_process(pid):
+        time.sleep(0.1)
+    if is_collector_process(pid):
+        print("HomeDash collector is still stopping.")
+        return 1
+    remove_own_pid(pid)
+    print("HomeDash collector stopped. The last sanitized snapshots were retained.")
+    return 0
+
+
+def collector_status() -> int:
+    pid = read_pid()
+    running = is_collector_process(pid)
+    if pid and not running:
+        remove_own_pid(pid)
+    snapshot_description = "CodexBar: no snapshot"
+    try:
+        payload = json.loads(SNAPSHOT_PATH.read_text(encoding="utf-8"))
+        generated_at = payload.get("generatedAt", "unknown time")
+        provider_count = len(payload.get("providers", []))
+        snapshot_description = f"CodexBar: {provider_count} providers, generated {generated_at}"
+    except (OSError, UnicodeError, json.JSONDecodeError, TypeError):
+        pass
+    tailscale_description = "Tailscale: no snapshot"
+    try:
+        payload = json.loads(TAILSCALE_SNAPSHOT_PATH.read_text(encoding="utf-8"))
+        generated_at = payload.get("generatedAt", "unknown time")
+        connection = payload.get("connection", {})
+        tailscale_description = (
+            "Tailscale: "
+            f"{connection.get('status', 'unavailable')}, "
+            f"{connection.get('transport', 'unknown')}, generated {generated_at}"
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError, TypeError, AttributeError):
+        pass
+    clash_verge_description = "Clash Verge: no snapshot"
+    try:
+        payload = json.loads(CLASH_VERGE_SNAPSHOT_PATH.read_text(encoding="utf-8"))
+        generated_at = payload.get("generatedAt", "unknown time")
+        proxy = payload.get("proxy", {})
+        clash_verge_description = (
+            "Clash Verge: PROXY "
+            f"{proxy.get('status', 'unavailable')}, generated {generated_at}"
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError, TypeError, AttributeError):
+        pass
+    openrouter_description = "OpenRouter: no snapshot"
+    try:
+        payload = json.loads(OPENROUTER_SNAPSHOT_PATH.read_text(encoding="utf-8"))
+        generated_at = payload.get("generatedAt", "unknown time")
+        credits_status = payload.get("credits", {}).get("status", "unavailable")
+        activity = payload.get("activity", {})
+        activity_status = activity.get("status", "unavailable")
+        model_count = activity.get("summary", {}).get("modelCount", 0)
+        openrouter_description = (
+            "OpenRouter: "
+            f"credits {credits_status}, activity {activity_status}, "
+            f"{model_count} models, generated {generated_at}"
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError, TypeError, AttributeError):
+        pass
+    live_activity_description = "Live activity: no snapshot"
+    try:
+        payload = json.loads(LIVE_ACTIVITY_SNAPSHOT_PATH.read_text(encoding="utf-8"))
+        generated_at = payload.get("generatedAt", "unknown time")
+        active_count = len(payload.get("activities", []))
+        live_activity_description = (
+            f"Live activity: {active_count} active, generated {generated_at}"
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError, TypeError, AttributeError):
+        pass
+    if running:
+        print(
+            f"HomeDash collector is running (pid {pid}); "
+            f"{snapshot_description}; {tailscale_description}; "
+            f"{clash_verge_description}; {openrouter_description}; "
+            f"{live_activity_description}."
+        )
+        return 0
+    print(
+        "HomeDash collector is not running; "
+        f"{snapshot_description}; {tailscale_description}; "
+        f"{clash_verge_description}; {openrouter_description}; "
+        f"{live_activity_description}."
+    )
+    return 1
+
+
+def run_loop() -> int:
+    ensure_data_dir()
+    current_pid = os.getpid()
+    stop_event = threading.Event()
+
+    def request_stop(*_: object) -> None:
+        stop_event.set()
+
+    signal.signal(signal.SIGTERM, request_stop)
+    signal.signal(signal.SIGINT, request_stop)
+    write_collector_log("Collector started.")
+    live_collector = LiveActivityCollector()
+
+    def run_live_observer() -> None:
+        failing = False
+        while not stop_event.wait(LIVE_POLL_INTERVAL_SECONDS):
+            succeeded = collect_live_activity_once(quiet=True, collector=live_collector)
+            if not succeeded and not failing:
+                write_collector_log(
+                    "Live-Activity collection failed; the prior sanitized snapshot was retained."
+                )
+            elif succeeded and failing:
+                write_collector_log("Live-Activity collection recovered.")
+            failing = not succeeded
+
+    live_thread = threading.Thread(
+        target=run_live_observer,
+        name="homedash-live-activity",
+        daemon=True,
+    )
+    live_thread.start()
+    try:
+        next_collection = time.monotonic() + REFRESH_INTERVAL_SECONDS
+        while not stop_event.wait(max(0, next_collection - time.monotonic())):
+            results = collect_once(quiet=True)
+            for source, succeeded in results.items():
+                if not succeeded:
+                    write_collector_log(
+                        f"{source.title()} collection failed; "
+                        "the prior sanitized snapshot was retained."
+                    )
+            next_collection += REFRESH_INTERVAL_SECONDS
+            if next_collection <= time.monotonic():
+                next_collection = time.monotonic() + REFRESH_INTERVAL_SECONDS
+    finally:
+        stop_event.set()
+        live_thread.join(timeout=2)
+        write_collector_log("Collector stopped.")
+        remove_own_pid(current_pid)
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Collect sanitized CodexBar, Tailscale, Clash Verge, and OpenRouter snapshots "
+            "plus live model activity for HomeDash."
+        )
+    )
+    parser.add_argument("command", choices=("start", "stop", "status", "once", "_run"))
+    arguments = parser.parse_args()
+    if arguments.command == "start":
+        return start_collector()
+    if arguments.command == "stop":
+        return stop_collector()
+    if arguments.command == "status":
+        return collector_status()
+    if arguments.command == "once":
+        ensure_data_dir()
+        return 0 if all(collect_once().values()) else 1
+    return run_loop()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

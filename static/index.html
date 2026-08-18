@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <meta
+      name="description"
+      content="A private, read-only dashboard for local CC Switch usage data."
+    />
+    <title>HomeDash · Home</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="brand-block" aria-label="HomeDash">
+        <span class="brand-kicker">HOME</span>
+        <strong>HomeDash</strong>
+      </div>
+
+      <nav class="main-nav" aria-label="Primary navigation">
+        <a id="nav-home" href="#home" class="active" aria-current="page" data-i18n="navHome">Home</a>
+        <a id="nav-ai" href="#ai">AI</a>
+      </nav>
+
+      <div class="connection-block" aria-live="polite">
+        <span id="connection-dot" class="connection-dot connecting"></span>
+        <span id="connection-label" data-i18n="connecting">正在连接</span>
+        <span class="header-divider" aria-hidden="true"></span>
+        <span class="local-badge" data-i18n="localOnly">本机</span>
+        <button
+          id="language-toggle"
+          class="language-toggle"
+          type="button"
+          aria-label="当前语言：中文，切换至 English"
+          title="当前语言：中文，切换至 English"
+        >
+          中
+        </button>
+      </div>
+    </header>
+
+    <main class="page-shell">
+      <section class="dashboard">
+        <section id="home-view" class="dashboard-view home-view" aria-labelledby="home-title">
+          <div class="dashboard-heading">
+            <div>
+              <p class="section-kicker">DASHBOARD</p>
+              <h1 id="home-title">Home</h1>
+            </div>
+            <span id="tailscale-meta" class="panel-meta" data-i18n="tailscaleWaiting">
+              正在等待 Tailscale
+            </span>
+          </div>
+
+          <div id="tailscale-notice" class="notice" role="status" hidden></div>
+
+          <section class="summary-grid home-summary-grid" aria-label="Tailscale summary">
+            <article class="metric-card home-metric-card">
+              <p class="metric-label" data-i18n="tailscaleStatus">Tailscale 状态</p>
+              <p class="metric-value home-status-value">
+                <span id="tailscale-status-dot" class="status-dot neutral" aria-hidden="true"></span>
+                <span id="tailscale-status-value" class="skeleton-text">—</span>
+              </p>
+              <p id="tailscale-status-hint" class="metric-hint" data-i18n="privateNetwork">
+                私有网络
+              </p>
+            </article>
+
+            <article class="metric-card home-metric-card">
+              <p class="metric-label" data-i18n="activeTransport">活动连接路径</p>
+              <p id="tailscale-transport-value" class="metric-value metric-model skeleton-text">—</p>
+              <p id="tailscale-transport-hint" class="metric-hint" data-i18n="transportScope">
+                所有活动 Peer 的脱敏汇总
+              </p>
+            </article>
+
+            <article class="metric-card home-metric-card">
+              <p class="metric-label" data-i18n="homeDerp">Home DERP</p>
+              <p id="tailscale-derp-value" class="metric-value metric-model skeleton-text">—</p>
+              <p id="tailscale-derp-hint" class="metric-hint">—</p>
+            </article>
+
+            <article class="metric-card home-metric-card">
+              <p class="metric-label" data-i18n="derpLatency">DERP 延迟</p>
+              <p id="tailscale-latency-value" class="metric-value skeleton-text">—</p>
+              <p id="tailscale-latency-hint" class="metric-hint" data-i18n="derpRoundTrip">
+                当前 Home DERP 往返延迟
+              </p>
+            </article>
+          </section>
+
+          <p class="transport-note" data-i18n="transportExplanation">
+            Home DERP 是节点的中继归属区域；活动连接仍可能使用 P2P 直连。
+          </p>
+
+          <section class="clash-panel" aria-labelledby="clash-heading">
+            <div class="panel-heading clash-panel-heading">
+              <div>
+                <p class="panel-kicker">MIHOMO</p>
+                <h2 id="clash-heading" data-i18n="currentProxy">PROXY</h2>
+              </div>
+              <span id="clash-meta" class="panel-meta" data-i18n="clashWaiting">
+                正在等待 Mihomo
+              </span>
+            </div>
+
+            <div id="clash-current" class="clash-current" aria-live="polite">
+              <span id="clash-status-dot" class="status-dot neutral" aria-hidden="true"></span>
+              <div class="clash-node">
+                <p class="clash-node-label" data-i18n="selectedNode">已选节点</p>
+                <p id="clash-node-name" class="clash-node-name skeleton-text">—</p>
+              </div>
+              <span id="clash-status" class="clash-status unavailable" data-i18n="clashUnavailableStatus">
+                暂不可用
+              </span>
+            </div>
+          </section>
+
+          <div id="home-provider-slot" class="provider-slot"></div>
+        </section>
+
+        <section id="ai-view" class="dashboard-view" aria-labelledby="dashboard-title" hidden>
+        <div class="dashboard-heading">
+          <div>
+            <p class="section-kicker">DASHBOARD</p>
+            <h1 id="dashboard-title">AI</h1>
+          </div>
+
+          <div class="ai-heading-controls">
+            <div class="segmented source-filter" id="source-filter" role="group" aria-label="Data source">
+              <button type="button" data-source="local" class="selected" data-i18n="localData">本地</button>
+              <button type="button" data-source="openrouter">OpenRouter</button>
+            </div>
+            <div id="local-filters" class="filters" aria-label="Dashboard filters">
+              <div class="segmented" id="range-filter" role="group" aria-label="Time range">
+                <button type="button" data-range="today" class="selected" data-i18n="today">今日</button>
+                <button type="button" data-range="7d" data-i18n="sevenDays">7 天</button>
+                <button type="button" data-range="30d" data-i18n="thirtyDays">30 天</button>
+              </div>
+              <div class="segmented" id="app-filter" role="group" aria-label="Application">
+                <button type="button" data-app="all" class="selected" data-i18n="all">全部</button>
+                <button type="button" data-app="codex">Codex</button>
+                <button type="button" data-app="claude">Claude</button>
+              </div>
+            </div>
+            <span id="openrouter-period" class="openrouter-period" data-i18n="lastThirtyCompletedDays" hidden>
+              最近 30 个已结束的 UTC 日
+            </span>
+          </div>
+        </div>
+
+        <div id="notice" class="notice" role="status" hidden></div>
+
+        <section class="summary-grid" aria-label="Usage summary">
+          <article class="metric-card">
+            <p id="requests-label" class="metric-label" data-i18n="todayUsage">今日用量</p>
+            <p id="requests-value" class="metric-value skeleton-text">—</p>
+            <p id="requests-hint" class="metric-hint" data-i18n="requests">次请求</p>
+          </article>
+
+          <article class="metric-card">
+            <p id="model-label" class="metric-label" data-i18n="primaryModel">主要模型</p>
+            <p id="model-value" class="metric-value metric-model skeleton-text">—</p>
+            <p id="model-hint" class="metric-hint" data-i18n="byTokenVolume">按 Token 用量</p>
+          </article>
+
+          <article class="metric-card">
+            <p id="success-label" class="metric-label" data-i18n="successRate">成功率</p>
+            <p id="success-value" class="metric-value skeleton-text">—</p>
+            <p id="success-hint" class="metric-hint">—</p>
+          </article>
+
+          <article class="metric-card">
+            <p id="tokens-label" class="metric-label" data-i18n="totalTokens">总 Token</p>
+            <p id="tokens-value" class="metric-value skeleton-text">—</p>
+            <p id="tokens-hint" class="metric-hint token-breakdown">
+              <span id="token-in-value" class="token-in">P-○ —</span>
+              <span id="token-out-value" class="token-out">O-○ —</span>
+            </p>
+            <p id="tokens-source-hint" class="metric-hint" hidden></p>
+          </article>
+        </section>
+
+        <div id="ai-provider-slot" class="provider-slot">
+        <section id="provider-panel" class="provider-panel" aria-labelledby="provider-heading">
+          <div class="panel-heading provider-panel-heading">
+            <div>
+              <p class="panel-kicker" data-i18n="providerQuotas">Provider 额度</p>
+              <h2 id="provider-heading" data-i18n="remainingCapacity">剩余额度</h2>
+            </div>
+            <span id="provider-meta" class="panel-meta">正在等待 CodexBar</span>
+          </div>
+
+          <div id="provider-list" class="provider-list" aria-live="polite">
+            <div class="provider-loading"></div>
+            <div class="provider-loading"></div>
+            <div class="provider-loading"></div>
+          </div>
+        </section>
+        </div>
+
+        <section class="detail-grid">
+          <article class="panel activity-panel">
+            <div class="panel-heading">
+              <div>
+                <p class="panel-kicker" data-i18n="latestActivity">最近活动</p>
+                <h2 id="activity-heading" data-i18n="requestStream">请求记录</h2>
+              </div>
+              <span id="data-through" class="panel-meta">—</span>
+            </div>
+
+            <div id="activity-list" class="activity-list" aria-live="polite">
+              <div class="loading-row"></div>
+              <div class="loading-row"></div>
+              <div class="loading-row"></div>
+            </div>
+          </article>
+
+          <article class="panel ranking-panel">
+            <div class="panel-heading">
+              <div>
+                <p id="ranking-kicker" class="panel-kicker" data-i18n="modelRankings">模型排行</p>
+                <h2 id="ranking-heading" data-i18n="tokenShare">Token 占比</h2>
+              </div>
+              <span id="ranking-total" class="panel-meta">—</span>
+            </div>
+
+            <div id="ranking-list" class="ranking-list" aria-live="polite">
+              <div class="ranking-loading"></div>
+              <div class="ranking-loading"></div>
+              <div class="ranking-loading"></div>
+              <div class="ranking-loading"></div>
+            </div>
+
+            <div class="panel-footer">
+              <span id="updated-at" data-i18n="waitingForData">正在等待数据</span>
+              <span id="schema-version" aria-label="Database schema"></span>
+            </div>
+          </article>
+        </section>
+        </section>
+      </section>
+    </main>
+
+    <noscript>
+      <p class="noscript">This dashboard requires JavaScript to display local usage data.</p>
+    </noscript>
+  </body>
+</html>

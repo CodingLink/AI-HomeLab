@@ -1,0 +1,56 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from app.openrouter_usage import (  # noqa: E402
+    delete_keychain_key,
+    keychain_has_key,
+    set_keychain_key,
+)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Manage the HomeDash OpenRouter Management Key in macOS Keychain."
+    )
+    parser.add_argument("command", choices=("set", "status", "delete"))
+    arguments = parser.parse_args()
+
+    if arguments.command == "set":
+        print("Enter the OpenRouter Management Key at the secure Keychain prompt.")
+        if not set_keychain_key():
+            print("The OpenRouter Management Key could not be stored.", file=sys.stderr)
+            return 1
+        print("OpenRouter Management Key stored in macOS Keychain.")
+        return 0
+
+    if arguments.command == "status":
+        configured = keychain_has_key()
+        print(
+            "OpenRouter Management Key is configured."
+            if configured
+            else "OpenRouter Management Key is not configured."
+        )
+        return 0 if configured else 1
+
+    if not keychain_has_key():
+        print("OpenRouter Management Key is not configured.")
+        return 0
+    if not delete_keychain_key():
+        print("The local OpenRouter Management Key could not be deleted.", file=sys.stderr)
+        return 1
+    print("Local OpenRouter Management Key deleted from macOS Keychain.")
+    print("Revoke the Management Key in OpenRouter to invalidate the remote credential.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
