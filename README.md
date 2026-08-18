@@ -2,6 +2,10 @@
 
 一个通过本机与 Tailnet 访问的 Home Dashboard。Home 页通过脱敏快照展示 Tailscale 在线状态、活动连接路径、Home DERP 与延迟；AI 页只读访问 CC Switch SQLite 数据，并展示 CodexBar Provider 额度。
 
+![AI HomeLab Dashboard 预览（脱敏演示数据）](docs/dashboard-preview.svg)
+
+AI HomeLab 将本机与 OpenRouter 用量集中在一个轻量 Dashboard 中：Home 页展示 Tailnet 状态与连接路径，AI 页支持本地/OpenRouter 数据源切换、Provider 额度、最近活动的 TTFT/Time/TPS、调用中状态和模型排行。界面采用卡片式汇总、活动与排行双栏布局、低对比度平滑动画，并兼顾桌面端与移动端显示。
+
 ## 启动
 
 1. 启动 OrbStack。
@@ -117,3 +121,5 @@ curl http://127.0.0.1:8787/api/v1/clash-verge
 curl http://127.0.0.1:8787/api/v1/openrouter
 curl http://127.0.0.1:8787/api/v1/live-activity
 ```
+
+[界面与功能参考：NodeSeek 帖子](https://www.nodeseek.com/post-810228-2)
