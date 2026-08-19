@@ -40,6 +40,7 @@ const translations = {
     delayed: "数据稍有延迟",
     disconnected: "连接中断",
     localOnly: "本机",
+    loadingPage: "正在加载页面数据",
     localData: "本地",
     today: "今日",
     sevenDays: "7 天",
@@ -173,6 +174,7 @@ const translations = {
     delayed: "data delayed",
     disconnected: "disconnected",
     localOnly: "local",
+    loadingPage: "Loading dashboard data",
     localData: "Local",
     today: "Today",
     sevenDays: "7 days",
@@ -275,6 +277,8 @@ const state = {
   app: "all",
   payload: null,
   fetching: false,
+  dashboardRequestKey: null,
+  dashboardReloadPending: false,
   providerPayload: null,
   providerFetching: false,
   providerFailed: false,
@@ -290,11 +294,15 @@ const state = {
   livePayload: null,
   liveFetching: false,
   renderedSource: null,
+  renderedView: null,
 };
 
 const elements = {
   navHome: document.querySelector("#nav-home"),
   navAi: document.querySelector("#nav-ai"),
+  navIndicator: document.querySelector(".nav-indicator"),
+  dashboard: document.querySelector(".dashboard"),
+  pageLoader: document.querySelector("#page-loader"),
   homeView: document.querySelector("#home-view"),
   aiView: document.querySelector("#ai-view"),
   homeProviderSlot: document.querySelector("#home-provider-slot"),
@@ -360,6 +368,14 @@ const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
 const listMoveDuration = 620;
 const listHighlightDuration = 900;
 const listEasing = "cubic-bezier(0.22, 1, 0.36, 1)";
+const viewTransitionDuration = 260;
+const viewEnterDistance = 16;
+const viewExitDistance = 12;
+const contentFadeDuration = 220;
+const resetCountdownThresholdMs = 10 * 60_000;
+const resetCountdownCriticalMs = 60_000;
+const resetCountdownTickMs = 160;
+const pageLoaderMinimumDuration = 420;
 
 function t(key, values = {}) {
   let text = translations[state.language][key] ?? key;
@@ -367,6 +383,54 @@ function t(key, values = {}) {
     text = text.replace(`{${name}}`, value);
   });
   return text;
+}
+
+let pageLoadSequence = 0;
+let pageLoadStartedAt = 0;
+let pageLoadHideTimer = null;
+
+function setPageLoading(active) {
+  window.clearTimeout(pageLoadHideTimer);
+  pageLoadHideTimer = null;
+  elements.pageLoader.hidden = !active;
+  elements.dashboard.classList.toggle("is-loading", active);
+  [elements.homeView, elements.aiView].forEach((view) => {
+    view.removeAttribute("aria-busy");
+  });
+  if (active) {
+    const activeView = state.view === "home" ? elements.homeView : elements.aiView;
+    activeView.setAttribute("aria-busy", "true");
+  }
+}
+
+function visiblePageRequestPending() {
+  if (state.view === "home") {
+    return state.tailscaleFetching || state.clashFetching || state.providerFetching;
+  }
+  if (state.source === "openrouter") return state.openrouterFetching;
+  return state.fetching || state.providerFetching;
+}
+
+async function waitForVisiblePageRequests(sequence) {
+  while (sequence === pageLoadSequence && visiblePageRequestPending()) {
+    await new Promise((resolve) => window.setTimeout(resolve, 40));
+  }
+}
+
+async function runPageLoad(loaders) {
+  const sequence = ++pageLoadSequence;
+  pageLoadStartedAt = performance.now();
+  setPageLoading(true);
+  await Promise.allSettled(loaders.map((load) => Promise.resolve().then(load)));
+  await waitForVisiblePageRequests(sequence);
+  if (sequence !== pageLoadSequence) return;
+  const remaining = Math.max(
+    0,
+    pageLoaderMinimumDuration - (performance.now() - pageLoadStartedAt),
+  );
+  pageLoadHideTimer = window.setTimeout(() => {
+    if (sequence === pageLoadSequence) setPageLoading(false);
+  }, remaining);
 }
 
 function locale() {
@@ -432,6 +496,13 @@ function formatRelativeReset(value) {
     return t("resetInHours", { count: formatInteger(hours) });
   }
   return t("resetInDays", { count: formatInteger(Math.ceil(hours / 24)) });
+}
+
+function formatCountdownClock(milliseconds) {
+  const totalSeconds = Math.max(0, Math.ceil(milliseconds / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }
 
 function formatWindowLabel(windowMinutes) {
@@ -1627,6 +1698,54 @@ function renderProviderFailure(animateChanges = false) {
   elements.providerMeta.textContent = t("providerUnavailable");
 }
 
+function updateResetCountdowns() {
+  if (document.hidden) return;
+  elements.providerList
+    .querySelectorAll(".provider-limit-reset[datetime]")
+    .forEach((node) => {
+      const resetAt = new Date(node.dateTime).getTime();
+      if (!Number.isFinite(resetAt)) return;
+      const remaining = resetAt - Date.now();
+      const wasCounting = node.classList.contains("is-counting");
+
+      if (remaining <= 0) {
+        if (!wasCounting) return;
+        node.classList.remove("is-counting", "is-critical");
+        node.textContent = `${t("resetAt")} ${formatDate(node.dateTime)} · ${t("resetNow")}`;
+        playRowAnimation(
+          node,
+          [
+            { backgroundColor: "rgba(63, 130, 215, 0.08)" },
+            { backgroundColor: "rgba(63, 130, 215, 0)" },
+          ],
+          { duration: listHighlightDuration, easing: listEasing },
+        );
+        return;
+      }
+
+      if (remaining > resetCountdownThresholdMs) {
+        if (!wasCounting) return;
+        node.classList.remove("is-counting", "is-critical");
+        node.textContent = `${t("resetAt")} ${formatDate(node.dateTime)} · ${formatRelativeReset(node.dateTime)}`;
+        return;
+      }
+
+      node.classList.add("is-counting");
+      node.classList.toggle("is-critical", remaining <= resetCountdownCriticalMs);
+      const text = `${t("resetAt")} ${formatDate(node.dateTime)} · ${formatCountdownClock(remaining)}`;
+      if (node.textContent === text) return;
+      node.textContent = text;
+      playRowAnimation(
+        node,
+        [
+          { opacity: 0.3, transform: "translate3d(0, 2px, 0)" },
+          { opacity: 1, transform: "translate3d(0, 0, 0)" },
+        ],
+        { duration: resetCountdownTickMs, easing: listEasing },
+      );
+    });
+}
+
 function officialOpenRouterCreditsAvailable() {
   const credits = state.openrouterPayload?.credits;
   return (
@@ -1970,7 +2089,130 @@ function renderProviderState() {
   }
 }
 
-function renderShell() {
+let viewTransitionToken = 0;
+let activeViewTransition = null;
+
+function unpinExitingView(outgoing) {
+  outgoing.classList.remove("is-exiting");
+  ["position", "top", "left", "width"].forEach((property) => {
+    outgoing.style.removeProperty(property);
+  });
+}
+
+function finalizeViewTransition() {
+  viewTransitionToken += 1;
+  if (!activeViewTransition) return;
+  const { outgoing, incoming } = activeViewTransition;
+  activeViewTransition = null;
+  [outgoing, incoming, elements.providerPanel].forEach(cancelRowAnimations);
+  unpinExitingView(outgoing);
+  outgoing.hidden = true;
+}
+
+function finishViewTransition(token) {
+  if (token !== viewTransitionToken || !activeViewTransition) return;
+  const { outgoing } = activeViewTransition;
+  activeViewTransition = null;
+  unpinExitingView(outgoing);
+  outgoing.hidden = true;
+}
+
+function startViewTransition(outgoing, incoming, nextView, panelRectBefore) {
+  const token = ++viewTransitionToken;
+  activeViewTransition = { outgoing, incoming };
+
+  // Pin the outgoing view over the incoming one so the container height
+  // collapses to the incoming view immediately. Reading incoming.offset*
+  // after removing outgoing from flow yields its final position.
+  outgoing.style.position = "absolute";
+  outgoing.style.top = `${incoming.offsetTop}px`;
+  outgoing.style.left = `${incoming.offsetLeft}px`;
+  outgoing.style.width = `${incoming.offsetWidth}px`;
+  outgoing.classList.add("is-exiting");
+
+  // Nav order is Home, AI: moving to AI slides in from the right.
+  const forward = nextView === "ai";
+  const enterFrom = forward ? viewEnterDistance : -viewEnterDistance;
+  const exitTo = forward ? -viewExitDistance : viewExitDistance;
+
+  const exitAnimation = playRowAnimation(
+    outgoing,
+    [
+      { opacity: 1, transform: "translate3d(0, 0, 0)" },
+      { opacity: 0, transform: `translate3d(${exitTo}px, 0, 0)` },
+    ],
+    { duration: viewTransitionDuration, easing: listEasing },
+  );
+  playRowAnimation(
+    incoming,
+    [
+      { opacity: 0, transform: `translate3d(${enterFrom}px, 0, 0)` },
+      { opacity: 1, transform: "translate3d(0, 0, 0)" },
+    ],
+    { duration: viewTransitionDuration, easing: listEasing },
+  );
+
+  if (panelRectBefore?.width) {
+    const panelRectAfter = elements.providerPanel.getBoundingClientRect();
+    const deltaX = panelRectBefore.left - panelRectAfter.left;
+    const deltaY = panelRectBefore.top - panelRectAfter.top;
+    if (
+      panelRectAfter.width &&
+      (Math.abs(deltaX) > 0.5 || Math.abs(deltaY) > 0.5)
+    ) {
+      playRowAnimation(
+        elements.providerPanel,
+        [
+          { transform: `translate3d(${deltaX}px, ${deltaY}px, 0)` },
+          { transform: "translate3d(0, 0, 0)" },
+        ],
+        { duration: viewTransitionDuration, easing: listEasing },
+      );
+    }
+  }
+
+  if (!exitAnimation) {
+    finishViewTransition(token);
+    return;
+  }
+  exitAnimation.finished.then(
+    () => finishViewTransition(token),
+    () => {},
+  );
+}
+
+function updateNavIndicator(animate) {
+  const indicator = elements.navIndicator;
+  const active = state.view === "home" ? elements.navHome : elements.navAi;
+  if (!animate) {
+    indicator.classList.add("is-instant");
+  }
+  // Matches the previous underline's 23px inset on each side of the link.
+  indicator.style.width = `${active.offsetWidth - 46}px`;
+  indicator.style.transform = `translateX(${active.offsetLeft + 23}px)`;
+  if (!animate) {
+    void indicator.offsetWidth;
+    indicator.classList.remove("is-instant");
+  }
+}
+
+function fadeAiContent() {
+  elements.aiView
+    .querySelectorAll(".summary-grid, .detail-grid")
+    .forEach((section) => {
+      playRowAnimation(
+        section,
+        [
+          { opacity: 0, transform: "translate3d(0, 4px, 0)" },
+          { opacity: 1, transform: "translate3d(0, 0, 0)" },
+        ],
+        { duration: contentFadeDuration, easing: listEasing },
+      );
+    });
+}
+
+function renderShell({ transition = false } = {}) {
+  finalizeViewTransition();
   document.documentElement.lang = state.language === "zh" ? "zh-CN" : "en";
   document.querySelectorAll("[data-i18n]").forEach((node) => {
     node.textContent = t(node.dataset.i18n);
@@ -1982,15 +2224,43 @@ function renderShell() {
   elements.languageToggle.textContent = isChinese ? "中" : "EN";
   elements.languageToggle.setAttribute("aria-label", languageLabel);
   elements.languageToggle.title = languageLabel;
+  elements.pageLoader.setAttribute("aria-label", t("loadingPage"));
 
   const isHome = state.view === "home";
+  const previousView = state.renderedView;
+  const viewChanged = previousView !== null && previousView !== state.view;
+  const incoming = isHome ? elements.homeView : elements.aiView;
+  const outgoing = viewChanged
+    ? isHome
+      ? elements.aiView
+      : elements.homeView
+    : null;
+  const animateTransition = Boolean(
+    transition &&
+      outgoing &&
+      !reducedMotion.matches &&
+      typeof incoming.animate === "function",
+  );
+  if (transition && viewChanged) {
+    window.scrollTo(0, 0);
+  }
+  const panelRectBefore = animateTransition
+    ? elements.providerPanel.getBoundingClientRect()
+    : null;
+
   elements.homeProviderSlot.hidden = false;
   elements.homeView.hidden = !isHome;
   elements.aiView.hidden = isHome;
+  if (animateTransition) outgoing.hidden = false;
   elements.navHome.classList.toggle("active", isHome);
   elements.navAi.classList.toggle("active", !isHome);
   moveProviderPanel(isHome);
   renderProviderState();
+  updateNavIndicator(Boolean(transition && viewChanged));
+  if (animateTransition) {
+    startViewTransition(outgoing, incoming, state.view, panelRectBefore);
+  }
+  state.renderedView = state.view;
   if (isHome) {
     elements.navHome.setAttribute("aria-current", "page");
     elements.navAi.removeAttribute("aria-current");
@@ -2019,29 +2289,52 @@ function renderShell() {
 }
 
 async function loadDashboard({ silent = false } = {}) {
-  if (state.fetching) return;
+  const requestedRange = state.range;
+  const requestedApp = state.app;
+  const requestKey = `${requestedRange}:${requestedApp}`;
+  if (state.fetching) {
+    if (state.dashboardRequestKey !== requestKey) {
+      state.dashboardReloadPending = true;
+    }
+    return;
+  }
   state.fetching = true;
+  state.dashboardRequestKey = requestKey;
   if (!silent && !state.payload) setConnection("connecting");
 
   try {
-    const params = new URLSearchParams({ range: state.range, app: state.app });
+    const params = new URLSearchParams({ range: requestedRange, app: requestedApp });
     const response = await fetch(`/api/v1/dashboard?${params}`, {
       headers: { Accept: "application/json" },
       cache: "no-store",
     });
     if (!response.ok) throw new Error("Dashboard request failed");
     const previousPayload = state.payload;
-    state.payload = await response.json();
+    const nextPayload = await response.json();
+    if (requestedRange !== state.range || requestedApp !== state.app) {
+      state.dashboardReloadPending = true;
+      return;
+    }
+    state.payload = nextPayload;
     if (state.view === "ai" && state.source === "local") {
       renderAI(previousPayload, true, false);
     }
   } catch (_error) {
-    if (state.view === "ai") {
+    if (
+      state.view === "ai" &&
+      requestedRange === state.range &&
+      requestedApp === state.app
+    ) {
       setConnection("offline");
       showNotice(t("databaseUnavailable"), true);
     }
   } finally {
     state.fetching = false;
+    state.dashboardRequestKey = null;
+    if (state.dashboardReloadPending) {
+      state.dashboardReloadPending = false;
+      loadDashboard();
+    }
   }
 }
 
@@ -2185,11 +2478,11 @@ elements.sourceFilter.addEventListener("click", (event) => {
   localStorage.setItem("cc-dashboard-source", state.source);
   state.livePayload = null;
   renderAI(null, false, false);
+  fadeAiContent();
   if (state.source === "local") {
-    loadDashboard();
-    loadLiveActivity();
+    runPageLoad([() => loadDashboard(), () => loadLiveActivity()]);
   } else {
-    loadOpenRouter();
+    runPageLoad([() => loadOpenRouter()]);
   }
 });
 
@@ -2198,7 +2491,8 @@ elements.rangeFilter.addEventListener("click", (event) => {
   if (!button || button.dataset.range === state.range) return;
   state.range = button.dataset.range;
   renderAI(state.payload, false, false);
-  loadDashboard();
+  fadeAiContent();
+  runPageLoad([() => loadDashboard()]);
 });
 
 elements.appFilter.addEventListener("click", (event) => {
@@ -2206,7 +2500,8 @@ elements.appFilter.addEventListener("click", (event) => {
   if (!button || button.dataset.app === state.app) return;
   state.app = button.dataset.app;
   renderAI(state.payload, false, false);
-  loadDashboard();
+  fadeAiContent();
+  runPageLoad([() => loadDashboard()]);
 });
 
 elements.languageToggle.addEventListener("click", () => {
@@ -2217,29 +2512,40 @@ elements.languageToggle.addEventListener("click", () => {
 
 window.addEventListener("hashchange", () => {
   state.view = window.location.hash === "#ai" ? "ai" : "home";
-  renderShell();
+  renderShell({ transition: state.view !== state.renderedView });
   if (state.view === "home") {
-    loadTailscale();
-    loadClashVerge();
-    loadProviders();
-    loadOpenRouter();
+    runPageLoad([
+      () => loadTailscale(),
+      () => loadClashVerge(),
+      () => loadProviders(),
+      () => loadOpenRouter(),
+    ]);
   } else {
-    loadDashboard();
-    loadProviders();
-    loadOpenRouter();
+    runPageLoad([
+      () => loadDashboard(),
+      () => loadProviders(),
+      () => loadOpenRouter(),
+    ]);
   }
 });
 
+window.addEventListener("resize", () => updateNavIndicator(false));
+document.fonts?.ready.then(() => updateNavIndicator(false));
+
 renderShell();
 if (state.view === "home") {
-  loadTailscale();
-  loadClashVerge();
-  loadProviders();
-  loadOpenRouter();
+  runPageLoad([
+    () => loadTailscale(),
+    () => loadClashVerge(),
+    () => loadProviders(),
+    () => loadOpenRouter(),
+  ]);
 } else {
-  loadDashboard();
-  loadProviders();
-  loadOpenRouter();
+  runPageLoad([
+    () => loadDashboard(),
+    () => loadProviders(),
+    () => loadOpenRouter(),
+  ]);
 }
 window.setInterval(() => {
   if (state.view === "home") {
@@ -2255,3 +2561,5 @@ window.setInterval(() => {
 }, 10_000);
 
 window.setInterval(loadLiveActivity, 1_000);
+
+window.setInterval(updateResetCountdowns, 1_000);

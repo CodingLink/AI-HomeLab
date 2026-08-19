@@ -23,6 +23,7 @@
       <nav class="main-nav" aria-label="Primary navigation">
         <a id="nav-home" href="#home" class="active" aria-current="page" data-i18n="navHome">Home</a>
         <a id="nav-ai" href="#ai">AI</a>
+        <span class="nav-indicator" aria-hidden="true"></span>
       </nav>
 
       <div class="connection-block" aria-live="polite">
@@ -44,6 +45,17 @@
 
     <main class="page-shell">
       <section class="dashboard">
+        <div
+          id="page-loader"
+          class="page-loader"
+          role="status"
+          aria-live="polite"
+          aria-label="正在加载页面数据"
+          hidden
+        >
+          <span class="page-loader-track" aria-hidden="true"></span>
+        </div>
+
         <section id="home-view" class="dashboard-view home-view" aria-labelledby="home-title">
           <div class="dashboard-heading">
             <div>
