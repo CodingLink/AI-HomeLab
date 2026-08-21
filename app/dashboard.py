@@ -27,6 +27,10 @@ REQUIRED_COLUMNS = {
     "created_at",
 }
 OPTIONAL_TIMING_COLUMNS = {"first_token_ms", "duration_ms", "latency_ms"}
+CACHE_INCLUSIVE_APP_TYPES = {"codex", "gemini", "grokbuild"}
+INPUT_TOKEN_SEMANTICS_LEGACY = 0
+INPUT_TOKEN_SEMANTICS_TOTAL = 1
+INPUT_TOKEN_SEMANTICS_FRESH = 2
 
 
 class DashboardError(RuntimeError):
@@ -188,6 +192,11 @@ class DashboardRepository:
                 for column in sorted(OPTIONAL_TIMING_COLUMNS)
             ]
             timing_sql = ",\n                ".join(timing_select)
+            input_semantics_select = (
+                "input_token_semantics"
+                if "input_token_semantics" in columns
+                else "0 AS input_token_semantics"
+            )
 
             pricing_table = connection.execute(
                 "SELECT 1 FROM sqlite_master "
@@ -221,6 +230,7 @@ class DashboardRepository:
                 output_tokens,
                 cache_read_tokens,
                 cache_creation_tokens,
+                {input_semantics_select},
                 total_cost_usd,
                 status_code,
                 created_at,
@@ -327,8 +337,28 @@ class DashboardRepository:
         }
 
     @staticmethod
-    def _add_row(metrics: Dict[str, Any], row: sqlite3.Row) -> Dict[str, Any]:
+    def _normalized_input_tokens(row: sqlite3.Row) -> int:
+        """Return CC Switch's cache-normalized (fresh) input token count."""
         input_tokens = _safe_int(row["input_tokens"])
+        cache_read_tokens = _safe_int(row["cache_read_tokens"])
+        cache_creation_tokens = _safe_int(row["cache_creation_tokens"])
+        semantics = _safe_int(row["input_token_semantics"])
+        app_type = str(row["app_type"] or "").lower()
+
+        if semantics == INPUT_TOKEN_SEMANTICS_FRESH:
+            return input_tokens
+        if app_type not in CACHE_INCLUSIVE_APP_TYPES:
+            return input_tokens
+        if semantics == INPUT_TOKEN_SEMANTICS_TOTAL:
+            cached_tokens = cache_read_tokens + cache_creation_tokens
+            return input_tokens - cached_tokens if input_tokens >= cached_tokens else input_tokens
+        if semantics == INPUT_TOKEN_SEMANTICS_LEGACY and input_tokens >= cache_read_tokens:
+            return input_tokens - cache_read_tokens
+        return input_tokens
+
+    @staticmethod
+    def _add_row(metrics: Dict[str, Any], row: sqlite3.Row) -> Dict[str, Any]:
+        input_tokens = DashboardRepository._normalized_input_tokens(row)
         output_tokens = _safe_int(row["output_tokens"])
         cache_read_tokens = _safe_int(row["cache_read_tokens"])
         cache_creation_tokens = _safe_int(row["cache_creation_tokens"])
@@ -414,7 +444,7 @@ class DashboardRepository:
                 data_through = created
 
             if len(recent) < recent_limit:
-                input_tokens = _safe_int(row["input_tokens"])
+                input_tokens = self._normalized_input_tokens(row)
                 output_tokens = _safe_int(row["output_tokens"])
                 cache_read_tokens = _safe_int(row["cache_read_tokens"])
                 cache_creation_tokens = _safe_int(row["cache_creation_tokens"])

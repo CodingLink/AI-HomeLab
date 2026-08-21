@@ -37,6 +37,7 @@ class DashboardRepositoryTests(unittest.TestCase):
                 output_tokens INTEGER NOT NULL DEFAULT 0,
                 cache_read_tokens INTEGER NOT NULL DEFAULT 0,
                 cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+                input_token_semantics INTEGER NOT NULL DEFAULT 0,
                 total_cost_usd TEXT NOT NULL DEFAULT '0',
                 status_code INTEGER NOT NULL,
                 first_token_ms INTEGER,
@@ -96,11 +97,11 @@ class DashboardRepositoryTests(unittest.TestCase):
         self.assertEqual(summary["requests"], 2)
         self.assertEqual(summary["successfulRequests"], 1)
         self.assertEqual(summary["successRate"], 50.0)
-        self.assertEqual(summary["inputTokens"], 150)
+        self.assertEqual(summary["inputTokens"], 120)
         self.assertEqual(summary["outputTokens"], 30)
         self.assertEqual(summary["cacheReadTokens"], 30)
         self.assertEqual(summary["cacheCreationTokens"], 5)
-        self.assertEqual(summary["totalTokens"], 215)
+        self.assertEqual(summary["totalTokens"], 185)
         self.assertEqual(summary["totalCostUsd"], 0.03)
         self.assertEqual(summary["primaryModel"], "gpt-5")
         self.assertEqual(summary["primaryModelDisplayName"], "GPT-5")
@@ -128,6 +129,42 @@ class DashboardRepositoryTests(unittest.TestCase):
         self.assertIsNone(unrouted["tps"])
         self.assertFalse(unrouted["routed"])
         self.assertEqual(unrouted["displayName"], "GPT-5")
+        self.assertEqual(unrouted["inputTokens"], 70)
+        self.assertEqual(unrouted["totalTokens"], 120)
+
+    def test_input_token_semantics_match_cc_switch_normalization(self):
+        connection = sqlite3.connect(str(self.database_path))
+        rows = [
+            ("legacy", "codex", 100, 10, 30, 0, 0),
+            ("total", "codex", 100, 10, 30, 20, 1),
+            ("fresh", "codex", 50, 10, 30, 20, 2),
+            ("claude-fresh", "claude", 50, 10, 100, 20, 0),
+            ("malformed", "codex", 100, 10, 200, 0, 0),
+        ]
+        connection.executemany(
+            """
+            INSERT INTO proxy_request_logs (
+                request_id, provider_id, app_type, model, input_tokens,
+                output_tokens, cache_read_tokens, cache_creation_tokens,
+                input_token_semantics, total_cost_usd, status_code,
+                created_at
+            ) VALUES (?, 'private-provider', ?, 'semantic-model', ?, ?, ?, ?, ?, '0', 200, ?)
+            """,
+            [(*row, epoch(2026, 8, 12, 9)) for row in rows],
+        )
+        connection.commit()
+        connection.close()
+
+        payload = self.repository.fetch_dashboard("today", "all")
+        semantic_model = next(
+            item for item in payload["models"] if item["model"] == "semantic-model"
+        )
+
+        self.assertEqual(semantic_model["inputTokens"], 320)
+        self.assertEqual(semantic_model["outputTokens"], 50)
+        self.assertEqual(semantic_model["cacheReadTokens"], 390)
+        self.assertEqual(semantic_model["cacheCreationTokens"], 60)
+        self.assertEqual(semantic_model["totalTokens"], 820)
 
     def test_range_and_app_filters(self):
         week = self.repository.fetch_dashboard("7d", "all")
