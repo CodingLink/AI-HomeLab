@@ -140,6 +140,82 @@ class ProviderNormalizationTests(unittest.TestCase):
 
         self.assertIsNone(provider["balance"])
         self.assertEqual(provider["limits"], [])
+        self.assertNotIn("resetCredits", provider)
+
+    def test_codex_reset_credits_keep_only_available_expiries(self):
+        raw = [
+            {
+                "provider": "codex",
+                "usage": {
+                    "codexResetCredits": {
+                        "availableCount": 4,
+                        "credits": [
+                            {
+                                "id": "private-credit-id",
+                                "status": "available",
+                                "expires_at": None,
+                                "title": "Full reset",
+                                "description": "private description",
+                            },
+                            {
+                                "status": "redeemed",
+                                "expires_at": "2026-08-15T12:00:00Z",
+                            },
+                            {
+                                "status": "available",
+                                "expiresAt": "2026-09-01T12:00:00+00:00",
+                            },
+                            {
+                                "status": "expired",
+                                "expires_at": "2026-08-14T12:00:00Z",
+                            },
+                            {
+                                "status": "available",
+                                "expires_at": "2026-08-20T12:00:00Z",
+                            },
+                            {"status": "available", "expires_at": "not-a-date"},
+                        ],
+                    }
+                },
+            }
+        ]
+
+        provider = normalize_provider_payload("codex", raw, FIXED_NOW)
+
+        self.assertEqual(provider["resetCredits"]["availableCount"], 4)
+        self.assertEqual(
+            provider["resetCredits"]["items"],
+            [
+                {"expiresAt": "2026-08-20T12:00:00Z"},
+                {"expiresAt": "2026-09-01T12:00:00Z"},
+                {"expiresAt": None},
+            ],
+        )
+        serialized = json.dumps(provider)
+        self.assertNotIn("private-credit-id", serialized)
+        self.assertNotIn("private description", serialized)
+        self.assertNotIn("Full reset", serialized)
+
+    def test_codex_zero_reset_credits_remain_visible(self):
+        provider = normalize_provider_payload(
+            "codex",
+            [
+                {
+                    "provider": "codex",
+                    "usage": {
+                        "codexResetCredits": {
+                            "availableCount": 0,
+                            "credits": [],
+                        }
+                    },
+                }
+            ],
+            FIXED_NOW,
+        )
+
+        self.assertEqual(
+            provider["resetCredits"], {"availableCount": 0, "items": []}
+        )
 
     def test_deepseek_balance_and_paid_granted_split(self):
         raw = [
@@ -291,6 +367,35 @@ class CollectorFailureTests(unittest.TestCase):
         self.assertEqual(collected["providers"][0]["status"], "stale")
         self.assertEqual(collected["providers"][0]["balance"]["amount"], 2.07)
 
+    def test_codex_failure_preserves_previous_reset_credits(self):
+        def runner(command, **_kwargs):
+            if command[1:3] == ["config", "providers"]:
+                return Result(json.dumps([{"provider": "codex", "enabled": True}]))
+            return Result(returncode=1)
+
+        previous = snapshot(
+            {
+                "id": "codex",
+                "name": "Codex",
+                "status": "live",
+                "lastSuccessAt": "2026-08-13T03:00:00Z",
+                "balance": None,
+                "limits": [],
+                "resetCredits": {
+                    "availableCount": 1,
+                    "items": [{"expiresAt": "2026-09-01T12:00:00Z"}],
+                },
+            }
+        )
+
+        collected = CodexBarCollector(
+            binary="/fake/codexbar", runner=runner, now_provider=lambda: FIXED_NOW
+        ).collect(previous)
+
+        provider = collected["providers"][0]
+        self.assertEqual(provider["status"], "stale")
+        self.assertEqual(provider["resetCredits"]["availableCount"], 1)
+
 
 class ProviderSnapshotServiceTests(unittest.TestCase):
     def setUp(self):
@@ -354,6 +459,51 @@ class ProviderSnapshotServiceTests(unittest.TestCase):
         self.assertFalse(fresh["meta"]["stale"])
         self.assertEqual(fresh["meta"]["staleAfterSeconds"], 900)
         self.assertTrue(stale["meta"]["stale"])
+
+    def test_snapshot_reset_credits_are_strictly_sanitized(self):
+        provider = {
+            "id": "codex",
+            "status": "live",
+            "lastSuccessAt": "2026-08-13T03:10:00Z",
+            "balance": None,
+            "limits": [],
+            "resetCredits": {
+                "availableCount": 2,
+                "items": [
+                    {
+                        "expiresAt": "2026-09-01T12:00:00Z",
+                        "id": "private-credit-id",
+                        "description": "private description",
+                    },
+                    {"expiresAt": None, "account": "private@example.com"},
+                    {"expiresAt": "invalid", "oauth": "secret-oauth"},
+                    {"id": "missing-expiry-field"},
+                ],
+                "cookie": "secret-cookie",
+            },
+        }
+        write_snapshot(self.path, snapshot(provider))
+
+        payload = ProviderSnapshotService(
+            str(self.path), now_provider=lambda: FIXED_NOW
+        ).get_providers()
+
+        self.assertEqual(
+            payload["providers"][0]["resetCredits"],
+            {
+                "availableCount": 2,
+                "items": [
+                    {"expiresAt": "2026-09-01T12:00:00Z"},
+                    {"expiresAt": None},
+                ],
+            },
+        )
+        serialized = json.dumps(payload)
+        self.assertNotIn("private-credit-id", serialized)
+        self.assertNotIn("private description", serialized)
+        self.assertNotIn("private@example.com", serialized)
+        self.assertNotIn("secret-cookie", serialized)
+        self.assertNotIn("secret-oauth", serialized)
 
     def test_missing_and_invalid_snapshots_are_unavailable(self):
         service = ProviderSnapshotService(str(self.path), now_provider=lambda: FIXED_NOW)

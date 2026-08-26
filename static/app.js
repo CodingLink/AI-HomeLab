@@ -99,6 +99,11 @@ const translations = {
     quotaRemaining: "剩余 {percent}%",
     resetAt: "重置",
     resetNow: "即将重置",
+    manualResets: "手动重置",
+    manualResetsAvailable: "{count} 次可用",
+    resetCreditExpires: "到期 {time} · {relative}",
+    resetCreditNoExpiry: "永久有效",
+    resetCreditExpiresSoon: "即将到期",
     resetInMinutes: "{count} 分钟后",
     resetInHours: "{count} 小时后",
     resetInDays: "{count} 天后",
@@ -233,6 +238,11 @@ const translations = {
     quotaRemaining: "{percent}% remaining",
     resetAt: "Resets",
     resetNow: "resetting soon",
+    manualResets: "Manual resets",
+    manualResetsAvailable: "{count} available",
+    resetCreditExpires: "Expires {time} · {relative}",
+    resetCreditNoExpiry: "No expiry",
+    resetCreditExpiresSoon: "expiring soon",
     resetInMinutes: "in {count} min",
     resetInHours: "in {count} hr",
     resetInDays: "in {count} days",
@@ -375,6 +385,7 @@ const contentFadeDuration = 220;
 const resetCountdownThresholdMs = 10 * 60_000;
 const resetCountdownCriticalMs = 60_000;
 const resetCountdownTickMs = 160;
+const resetFlipClockThresholdMs = 5 * 60_000;
 const pageLoaderMinimumDuration = 420;
 
 function t(key, values = {}) {
@@ -496,6 +507,29 @@ function formatRelativeReset(value) {
     return t("resetInHours", { count: formatInteger(hours) });
   }
   return t("resetInDays", { count: formatInteger(Math.ceil(hours / 24)) });
+}
+
+function formatRelativeExpiry(value) {
+  const expiresAt = new Date(value).getTime();
+  if (!Number.isFinite(expiresAt)) return "";
+  const remainingMilliseconds = expiresAt - Date.now();
+  if (remainingMilliseconds <= 60_000) return t("resetCreditExpiresSoon");
+  const minutes = Math.ceil(remainingMilliseconds / 60_000);
+  if (minutes < 60) {
+    return t("resetInMinutes", { count: formatInteger(minutes) });
+  }
+  const hours = Math.ceil(minutes / 60);
+  if (hours < 48) {
+    return t("resetInHours", { count: formatInteger(hours) });
+  }
+  return t("resetInDays", { count: formatInteger(Math.ceil(hours / 24)) });
+}
+
+function formatResetCreditExpiry(value) {
+  return t("resetCreditExpires", {
+    time: formatDate(value),
+    relative: formatRelativeExpiry(value),
+  });
 }
 
 function formatCountdownClock(milliseconds) {
@@ -1483,6 +1517,7 @@ function providerQuotaSignature(provider) {
     status: provider?.status,
     balance: provider?.balance,
     limits: provider?.limits,
+    resetCredits: provider?.resetCredits,
   });
 }
 
@@ -1490,6 +1525,21 @@ function createProviderNode() {
   const node = document.createElement("article");
   node.className = "provider-card";
   node.innerHTML = `
+    <div class="provider-urgency-banner" hidden>
+      <span class="provider-urgency-label"></span>
+      <span class="provider-urgency-value"></span>
+    </div>
+    <div class="provider-flip-clock" hidden>
+      <div class="provider-flip-clock-label" data-i18n="resetNow">即将重置</div>
+      <div class="provider-flip-clock-digits" aria-hidden="true">
+        <span class="flip-digit"><span class="flip-digit-current">0</span></span>
+        <span class="flip-digit"><span class="flip-digit-current">0</span></span>
+        <span class="flip-separator">:</span>
+        <span class="flip-digit"><span class="flip-digit-current">0</span></span>
+        <span class="flip-digit"><span class="flip-digit-current">0</span></span>
+      </div>
+      <time class="provider-flip-clock-time" hidden></time>
+    </div>
     <div class="provider-card-heading">
       <h3 class="provider-name"></h3>
       <span class="provider-status"></span>
@@ -1500,6 +1550,13 @@ function createProviderNode() {
       <p class="provider-balance-detail"></p>
     </div>
     <div class="provider-limits"></div>
+    <section class="provider-reset-credits" hidden>
+      <div class="provider-reset-credits-heading">
+        <span class="provider-reset-credits-label"></span>
+        <span class="provider-reset-credits-count"></span>
+      </div>
+      <div class="provider-reset-credit-list"></div>
+    </section>
     <p class="provider-empty" hidden></p>
     <p class="provider-last-success" hidden></p>
   `;
@@ -1521,8 +1578,11 @@ function updateProviderNode(node, provider) {
   statusElement.className = `provider-status ${status}`;
   statusElement.textContent = providerStatusLabel(status);
 
+  updateProviderUrgency(node, provider);
+
   const hasBalance = Boolean(provider.balance);
   const hasLimits = Boolean(provider.limits?.length);
+  const hasResetCredits = provider.id === "codex" && Boolean(provider.resetCredits);
   const balanceBlock = node.querySelector(".provider-balance");
   balanceBlock.hidden = !hasBalance;
   node.querySelector(".provider-balance-label").textContent = t("balance");
@@ -1530,8 +1590,12 @@ function updateProviderNode(node, provider) {
   balanceDetail.textContent = formatBalanceDetail(provider.balance?.detail);
   balanceDetail.hidden = !provider.balance?.detail;
 
+  const resetCredits = node.querySelector(".provider-reset-credits");
+  resetCredits.hidden = !hasResetCredits;
+  node.querySelector(".provider-reset-credits-label").textContent = t("manualResets");
+
   const empty = node.querySelector(".provider-empty");
-  empty.hidden = hasBalance || hasLimits;
+  empty.hidden = hasBalance || hasLimits || hasResetCredits;
   empty.textContent = status === "unavailable" ? t("providerUnavailable") : t("noQuotaData");
 
   const lastSuccess = node.querySelector(".provider-last-success");
@@ -1623,6 +1687,58 @@ function renderProviderLimits(node, provider, previousProvider, animateChanges) 
   });
 }
 
+function createProviderResetCreditNode() {
+  const node = document.createElement("time");
+  node.className = "provider-reset-credit-item";
+  return node;
+}
+
+function updateProviderResetCreditNode(node, item) {
+  if (item.expiresAt) {
+    node.dateTime = item.expiresAt;
+    node.textContent = formatResetCreditExpiry(item.expiresAt);
+    return;
+  }
+  node.removeAttribute("datetime");
+  node.textContent = t("resetCreditNoExpiry");
+}
+
+function keyedResetCreditItems(provider) {
+  const occurrences = new Map();
+  return (provider.resetCredits?.items || []).map((item) => {
+    const value = item.expiresAt || "no-expiry";
+    const occurrence = occurrences.get(value) || 0;
+    occurrences.set(value, occurrence + 1);
+    return { ...item, key: `${value}:${occurrence}` };
+  });
+}
+
+function renderProviderResetCredits(node, provider, previousProvider, animateChanges) {
+  const container = node.querySelector(".provider-reset-credit-list");
+  const items = keyedResetCreditItems(provider);
+  reconcileKeyedList({
+    container,
+    itemClass: "provider-reset-credit-item",
+    items,
+    keyFor: (item) => item.key,
+    createNode: createProviderResetCreditNode,
+    updateNode: updateProviderResetCreditNode,
+    animateLayout: animateChanges && Boolean(previousProvider) && !reducedMotion.matches,
+    shouldHighlight: () => false,
+  });
+
+  const count = Number(provider.resetCredits?.availableCount);
+  const previousCount = Number(previousProvider?.resetCredits?.availableCount);
+  if (Number.isFinite(count)) {
+    animateNumber(
+      node.querySelector(".provider-reset-credits-count"),
+      Number.isFinite(previousCount) ? previousCount : undefined,
+      count,
+      (value) => t("manualResetsAvailable", { count: formatInteger(Math.round(value)) }),
+    );
+  }
+}
+
 function renderProviders(payload, previousPayload = null, animateChanges = false) {
   const generatedAt = payload?.meta?.generatedAt;
   elements.providerMeta.textContent = payload?.meta?.stale
@@ -1678,7 +1794,139 @@ function renderProviders(payload, previousPayload = null, animateChanges = false
       }
     }
     renderProviderLimits(node, provider, previous, animateChanges);
+    renderProviderResetCredits(node, provider, previous, animateChanges);
   });
+}
+
+function updateProviderUrgency(node, provider) {
+  const now = Date.now();
+  const banner = node.querySelector(".provider-urgency-banner");
+  const clock = node.querySelector(".provider-flip-clock");
+  const clockTime = node.querySelector(".provider-flip-clock-time");
+
+  const nearest = (provider.limits || [])
+    .filter((limit) => limit.resetAt)
+    .map((limit) => ({
+      limit,
+      remaining: new Date(limit.resetAt).getTime() - now,
+    }))
+    .filter(
+      (entry) =>
+        entry.remaining > 0 && entry.remaining <= resetFlipClockThresholdMs,
+    )
+    .sort((a, b) => a.remaining - b.remaining)[0];
+
+  if (!nearest) {
+    banner.hidden = true;
+    clock.hidden = true;
+    clockTime.removeAttribute("datetime");
+    return;
+  }
+
+  const { limit } = nearest;
+  const labelText = t("resetNow");
+  const remainingText = limit.remainingPercent != null
+    ? t("quotaRemaining", { percent: Number(limit.remainingPercent).toFixed(1) })
+    : limit.detail || "";
+  banner.hidden = false;
+  banner.classList.toggle("is-critical", nearest.remaining <= resetCountdownCriticalMs);
+  node.querySelector(".provider-urgency-label").textContent = labelText;
+  node.querySelector(".provider-urgency-value").textContent = remainingText;
+
+  clock.hidden = false;
+  clockTime.hidden = false;
+  clockTime.dateTime = limit.resetAt;
+  clockTime.textContent = formatCountdownClock(nearest.remaining);
+  setFlipClockValue(
+    clock.querySelector(".provider-flip-clock-digits"),
+    nearest.remaining,
+    false,
+  );
+}
+
+const flipDigitSettlers = new WeakMap();
+
+function setFlipDigit(digitEl, digit, animate) {
+  if (!digitEl) return;
+  if (!animate || reducedMotion.matches) {
+    flipDigitSettlers.get(digitEl)?.();
+    digitEl.classList.remove("is-flipping");
+    const current = digitEl.querySelector(".flip-digit-current");
+    if (!current || current.textContent !== digit) {
+      digitEl.innerHTML = `<span class="flip-digit-current">${digit}</span>`;
+    }
+    return;
+  }
+  const current = digitEl.querySelector(".flip-digit-current");
+  if (
+    current &&
+    current.textContent === digit &&
+    !digitEl.classList.contains("is-flipping")
+  ) {
+    return;
+  }
+  // Force-settle any in-flight flip so the new pair renders from a clean base state.
+  flipDigitSettlers.get(digitEl)?.();
+  const previous =
+    digitEl.querySelector(".flip-digit-current")?.textContent ?? "";
+  digitEl.innerHTML = `<span class="flip-digit-current">${previous}</span><span class="flip-digit-next">${digit}</span>`;
+  requestAnimationFrame(() => {
+    digitEl.classList.add("is-flipping");
+    let settled = false;
+    const settle = () => {
+      if (settled) return;
+      settled = true;
+      flipDigitSettlers.delete(digitEl);
+      digitEl.classList.remove("is-flipping");
+      digitEl.innerHTML = `<span class="flip-digit-current">${digit}</span>`;
+    };
+    flipDigitSettlers.set(digitEl, settle);
+    digitEl.addEventListener("transitionend", settle, { once: true });
+    window.setTimeout(settle, 400);
+  });
+}
+
+function setFlipClockValue(digits, remaining, animate) {
+  if (!digits) return;
+  const safeRemaining = Math.max(0, remaining);
+  const minutes = Math.floor(safeRemaining / 60_000);
+  const seconds = Math.floor((safeRemaining % 60_000) / 1_000);
+  const digitEls = digits.querySelectorAll(".flip-digit");
+  setFlipDigit(digitEls[0], String(Math.floor(minutes / 10)), animate);
+  setFlipDigit(digitEls[1], String(minutes % 10), animate);
+  setFlipDigit(digitEls[2], String(Math.floor(seconds / 10)), animate);
+  setFlipDigit(digitEls[3], String(seconds % 10), animate);
+}
+
+function updateFlipClockNode(node) {
+  const resetAt = new Date(node.dateTime).getTime();
+  if (!Number.isFinite(resetAt)) return;
+  const remaining = resetAt - Date.now();
+  const card = node.closest(".provider-card");
+  const banner = card?.querySelector(".provider-urgency-banner");
+  const digits = card?.querySelector(".provider-flip-clock-digits");
+  const label = card?.querySelector(".provider-flip-clock-label");
+  if (!card || !digits) return;
+
+  if (remaining <= 0) {
+    if (banner) banner.hidden = true;
+    card.querySelector(".provider-flip-clock").hidden = true;
+    setFlipClockValue(digits, 0, false);
+    node.removeAttribute("datetime");
+    return;
+  }
+
+  if (remaining > resetFlipClockThresholdMs) {
+    if (banner) banner.hidden = true;
+    card.querySelector(".provider-flip-clock").hidden = true;
+    node.removeAttribute("datetime");
+    return;
+  }
+
+  banner?.classList.toggle("is-critical", remaining <= resetCountdownCriticalMs);
+  if (label) label.textContent = t("resetNow");
+  setFlipClockValue(digits, remaining, true);
+  node.textContent = formatCountdownClock(remaining);
 }
 
 function renderProviderFailure(animateChanges = false) {
@@ -1698,51 +1946,66 @@ function renderProviderFailure(animateChanges = false) {
   elements.providerMeta.textContent = t("providerUnavailable");
 }
 
-function updateResetCountdowns() {
+function updateLimitResetNode(node) {
+  const resetAt = new Date(node.dateTime).getTime();
+  if (!Number.isFinite(resetAt)) return;
+  const remaining = resetAt - Date.now();
+  const wasCounting = node.classList.contains("is-counting");
+
+  if (remaining <= 0) {
+    if (!wasCounting) return;
+    node.classList.remove("is-counting", "is-critical");
+    node.textContent = `${t("resetAt")} ${formatDate(node.dateTime)} · ${t("resetNow")}`;
+    playRowAnimation(
+      node,
+      [
+        { backgroundColor: "rgba(63, 130, 215, 0.08)" },
+        { backgroundColor: "rgba(63, 130, 215, 0)" },
+      ],
+      { duration: listHighlightDuration, easing: listEasing },
+    );
+    return;
+  }
+
+  if (remaining > resetCountdownThresholdMs) {
+    if (!wasCounting) return;
+    node.classList.remove("is-counting", "is-critical");
+    node.textContent = `${t("resetAt")} ${formatDate(node.dateTime)} · ${formatRelativeReset(node.dateTime)}`;
+    return;
+  }
+
+  node.classList.add("is-counting");
+  node.classList.toggle("is-critical", remaining <= resetCountdownCriticalMs);
+  const text = `${t("resetAt")} ${formatDate(node.dateTime)} · ${formatCountdownClock(remaining)}`;
+  if (node.textContent === text) return;
+  node.textContent = text;
+  playRowAnimation(
+    node,
+    [
+      { opacity: 0.3, transform: "translate3d(0, 2px, 0)" },
+      { opacity: 1, transform: "translate3d(0, 0, 0)" },
+    ],
+    { duration: resetCountdownTickMs, easing: listEasing },
+  );
+}
+
+function tickProviderCountdowns() {
   if (document.hidden) return;
   elements.providerList
-    .querySelectorAll(".provider-limit-reset[datetime]")
+    .querySelectorAll(
+      ".provider-reset-credit-item[datetime], .provider-limit-reset[datetime], .provider-flip-clock-time[datetime]",
+    )
     .forEach((node) => {
-      const resetAt = new Date(node.dateTime).getTime();
-      if (!Number.isFinite(resetAt)) return;
-      const remaining = resetAt - Date.now();
-      const wasCounting = node.classList.contains("is-counting");
-
-      if (remaining <= 0) {
-        if (!wasCounting) return;
-        node.classList.remove("is-counting", "is-critical");
-        node.textContent = `${t("resetAt")} ${formatDate(node.dateTime)} · ${t("resetNow")}`;
-        playRowAnimation(
-          node,
-          [
-            { backgroundColor: "rgba(63, 130, 215, 0.08)" },
-            { backgroundColor: "rgba(63, 130, 215, 0)" },
-          ],
-          { duration: listHighlightDuration, easing: listEasing },
-        );
+      if (node.classList.contains("provider-reset-credit-item")) {
+        const text = formatResetCreditExpiry(node.dateTime);
+        if (node.textContent !== text) node.textContent = text;
         return;
       }
-
-      if (remaining > resetCountdownThresholdMs) {
-        if (!wasCounting) return;
-        node.classList.remove("is-counting", "is-critical");
-        node.textContent = `${t("resetAt")} ${formatDate(node.dateTime)} · ${formatRelativeReset(node.dateTime)}`;
+      if (node.classList.contains("provider-flip-clock-time")) {
+        updateFlipClockNode(node);
         return;
       }
-
-      node.classList.add("is-counting");
-      node.classList.toggle("is-critical", remaining <= resetCountdownCriticalMs);
-      const text = `${t("resetAt")} ${formatDate(node.dateTime)} · ${formatCountdownClock(remaining)}`;
-      if (node.textContent === text) return;
-      node.textContent = text;
-      playRowAnimation(
-        node,
-        [
-          { opacity: 0.3, transform: "translate3d(0, 2px, 0)" },
-          { opacity: 1, transform: "translate3d(0, 0, 0)" },
-        ],
-        { duration: resetCountdownTickMs, easing: listEasing },
-      );
+      updateLimitResetNode(node);
     });
 }
 
@@ -2443,8 +2706,56 @@ async function loadOpenRouter() {
   }
 }
 
+let liveActivityStream = null;
+let liveActivityStreamFailed = false;
+
+function liveActivityWanted() {
+  return state.view === "ai" && state.source === "local" && !document.hidden;
+}
+
+function applyLiveActivity(payload) {
+  state.livePayload = payload?.meta?.stale ? null : payload;
+  if (state.view === "ai" && state.source === "local" && state.payload) {
+    renderActivity(state.payload, state.payload, true);
+  }
+}
+
+function closeLiveActivityStream() {
+  liveActivityStream?.close();
+  liveActivityStream = null;
+}
+
+function manageLiveActivityStream() {
+  if (!liveActivityWanted() || liveActivityStreamFailed) {
+    closeLiveActivityStream();
+    return;
+  }
+  if (liveActivityStream) return;
+  if (typeof EventSource !== "function") {
+    liveActivityStreamFailed = true;
+    return;
+  }
+  const stream = new EventSource("/api/v1/live-activity/stream");
+  liveActivityStream = stream;
+  stream.onmessage = (event) => {
+    try {
+      applyLiveActivity(JSON.parse(event.data));
+    } catch (_error) {}
+  };
+  stream.onerror = () => {
+    // CLOSED means the endpoint failed hard (e.g. 404) and the browser gave
+    // up reconnecting — fall back to the 1s polling loop permanently.
+    if (stream.readyState === EventSource.CLOSED) {
+      liveActivityStreamFailed = true;
+      closeLiveActivityStream();
+    }
+  };
+}
+
 async function loadLiveActivity() {
   if (
+    liveActivityStream ||
+    document.hidden ||
     state.liveFetching ||
     state.view !== "ai" ||
     state.source !== "local" ||
@@ -2459,15 +2770,11 @@ async function loadLiveActivity() {
       cache: "no-store",
     });
     if (!response.ok) throw new Error("Live activity request failed");
-    const payload = await response.json();
-    state.livePayload = payload?.meta?.stale ? null : payload;
+    applyLiveActivity(await response.json());
   } catch (_error) {
-    state.livePayload = null;
+    applyLiveActivity(null);
   } finally {
     state.liveFetching = false;
-  }
-  if (state.view === "ai" && state.source === "local" && state.payload) {
-    renderActivity(state.payload, state.payload, true);
   }
 }
 
@@ -2484,6 +2791,7 @@ elements.sourceFilter.addEventListener("click", (event) => {
   } else {
     runPageLoad([() => loadOpenRouter()]);
   }
+  manageLiveActivityStream();
 });
 
 elements.rangeFilter.addEventListener("click", (event) => {
@@ -2527,6 +2835,7 @@ window.addEventListener("hashchange", () => {
       () => loadOpenRouter(),
     ]);
   }
+  manageLiveActivityStream();
 });
 
 window.addEventListener("resize", () => updateNavIndicator(false));
@@ -2547,19 +2856,35 @@ if (state.view === "home") {
     () => loadOpenRouter(),
   ]);
 }
-window.setInterval(() => {
+manageLiveActivityStream();
+
+function refreshCurrentView({ silent = false } = {}) {
   if (state.view === "home") {
-    loadTailscale({ silent: true });
+    loadTailscale({ silent });
     loadClashVerge();
     loadProviders();
     loadOpenRouter();
-  } else {
-    loadDashboard({ silent: true });
-    loadProviders();
-    loadOpenRouter();
+    return;
   }
+  loadDashboard({ silent });
+  loadProviders();
+  loadOpenRouter();
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    closeLiveActivityStream();
+    return;
+  }
+  refreshCurrentView({ silent: true });
+  manageLiveActivityStream();
+});
+
+window.setInterval(() => {
+  if (document.hidden) return;
+  refreshCurrentView({ silent: true });
 }, 10_000);
 
 window.setInterval(loadLiveActivity, 1_000);
 
-window.setInterval(updateResetCountdowns, 1_000);
+window.setInterval(tickProviderCountdowns, 1_000);

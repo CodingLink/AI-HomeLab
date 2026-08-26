@@ -4,6 +4,7 @@ import json
 import mimetypes
 import os
 import signal
+import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -45,6 +46,9 @@ LIVE_ACTIVITY_SERVICE = live_activity_service_from_environment()
 
 class DashboardHandler(BaseHTTPRequestHandler):
     server_version = "CCSwitchDashboard/1.0"
+    # Every non-streaming response sets Content-Length, so keep-alive is safe;
+    # HTTP/1.1 is required for the chunked-free SSE stream below.
+    protocol_version = "HTTP/1.1"
 
     def log_message(self, format: str, *args: Any) -> None:
         # Keep access logs useful without printing client IPs, query strings, or data.
@@ -101,6 +105,45 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(body)
+
+    def _stream_live_activity(self) -> None:
+        """Server-sent events stream of live-activity snapshots.
+
+        Sends the current snapshot immediately, then re-reads it every second
+        and only pushes when the serialized payload changes (the snapshot's
+        meta.generatedAt is stable while the file is unchanged). A comment
+        heartbeat keeps intermediaries from closing the idle connection.
+        """
+        self.send_response(HTTPStatus.OK)
+        self._security_headers()
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+
+        last_sent: str | None = None
+        last_ping = time.monotonic()
+        try:
+            while True:
+                try:
+                    payload = LIVE_ACTIVITY_SERVICE.get_activity()
+                except LiveActivitySnapshotUnavailable:
+                    payload = None
+                if payload is not None:
+                    body = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+                    if body != last_sent:
+                        last_sent = body
+                        self.wfile.write("data: {}\n\n".format(body).encode("utf-8"))
+                        self.wfile.flush()
+                now = time.monotonic()
+                if now - last_ping >= 15:
+                    last_ping = now
+                    self.wfile.write(b": ping\n\n")
+                    self.wfile.flush()
+                time.sleep(1)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        finally:
+            self.close_connection = True
 
     def _route(self) -> None:
         parsed = urlsplit(self.path)
@@ -173,6 +216,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 )
             else:
                 self._write_json(HTTPStatus.OK, payload)
+            return
+
+        if parsed.path == "/api/v1/live-activity/stream":
+            self._stream_live_activity()
             return
 
         if parsed.path == "/api/v1/live-activity":

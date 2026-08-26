@@ -20,6 +20,7 @@ PROVIDER_TIMEOUT_SECONDS = 15
 
 _PROVIDER_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 _LIMIT_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,31}$")
+_MAX_RESET_CREDIT_ITEMS = 32
 _EMAIL = re.compile(r"\b[^\s@]+@[^\s@]+\b")
 _SENSITIVE_MARKERS = (
     "api key",
@@ -317,6 +318,43 @@ def _quota_limit(
     return limit
 
 
+def _reset_credits(value: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(value, Mapping):
+        return None
+    available_count = finite_number(value.get("availableCount"))
+    if (
+        available_count is None
+        or available_count < 0
+        or not available_count.is_integer()
+    ):
+        return None
+
+    items: List[Dict[str, Optional[str]]] = []
+    raw_credits = value.get("credits")
+    if isinstance(raw_credits, list):
+        for raw_credit in raw_credits:
+            if not isinstance(raw_credit, Mapping):
+                continue
+            if raw_credit.get("status") != "available":
+                continue
+            raw_expiry = raw_credit.get("expires_at")
+            if raw_expiry is None:
+                raw_expiry = raw_credit.get("expiresAt")
+            if raw_expiry is None:
+                expires_at = None
+            else:
+                expires_at = canonical_iso(raw_expiry)
+                if expires_at is None:
+                    continue
+            items.append({"expiresAt": expires_at})
+
+    items.sort(key=lambda item: (item["expiresAt"] is None, item["expiresAt"] or ""))
+    return {
+        "availableCount": int(available_count),
+        "items": items[:_MAX_RESET_CREDIT_ITEMS],
+    }
+
+
 def _usage_row(raw_payload: Any, provider_id: str) -> Mapping[str, Any]:
     rows: Sequence[Any]
     if isinstance(raw_payload, list):
@@ -394,7 +432,7 @@ def normalize_provider_payload(
                     limits.append(extra_limit)
 
     checked = checked_at or utc_now()
-    return {
+    provider = {
         "id": provider_id,
         "name": provider_name(provider_id),
         "status": "live",
@@ -403,6 +441,11 @@ def normalize_provider_payload(
         "balance": balance,
         "limits": limits,
     }
+    if provider_id == "codex" and isinstance(usage, Mapping):
+        reset_credits = _reset_credits(usage.get("codexResetCredits"))
+        if reset_credits is not None:
+            provider["resetCredits"] = reset_credits
+    return provider
 
 
 def _sanitize_balance(value: Any) -> Optional[Dict[str, Any]]:
@@ -474,6 +517,41 @@ def _sanitize_limits(value: Any) -> List[Dict[str, Any]]:
     return limits
 
 
+def _sanitize_reset_credits(value: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(value, Mapping):
+        return None
+    available_count = finite_number(value.get("availableCount"))
+    if (
+        available_count is None
+        or available_count < 0
+        or not available_count.is_integer()
+    ):
+        return None
+
+    items: List[Dict[str, Optional[str]]] = []
+    raw_items = value.get("items")
+    if isinstance(raw_items, list):
+        for raw_item in raw_items:
+            if not isinstance(raw_item, Mapping):
+                continue
+            if "expiresAt" not in raw_item:
+                continue
+            raw_expiry = raw_item.get("expiresAt")
+            if raw_expiry is None:
+                expires_at = None
+            else:
+                expires_at = canonical_iso(raw_expiry)
+                if expires_at is None:
+                    continue
+            items.append({"expiresAt": expires_at})
+
+    items.sort(key=lambda item: (item["expiresAt"] is None, item["expiresAt"] or ""))
+    return {
+        "availableCount": int(available_count),
+        "items": items[:_MAX_RESET_CREDIT_ITEMS],
+    }
+
+
 def sanitize_provider_record(value: Any, include_checked: bool = False) -> Optional[Dict[str, Any]]:
     if not isinstance(value, Mapping):
         return None
@@ -491,6 +569,10 @@ def sanitize_provider_record(value: Any, include_checked: bool = False) -> Optio
         "balance": _sanitize_balance(value.get("balance")),
         "limits": _sanitize_limits(value.get("limits")),
     }
+    if provider_id == "codex":
+        reset_credits = _sanitize_reset_credits(value.get("resetCredits"))
+        if reset_credits is not None:
+            record["resetCredits"] = reset_credits
     if include_checked:
         record["lastCheckedAt"] = canonical_iso(value.get("lastCheckedAt"))
     return record
