@@ -318,6 +318,15 @@ def _quota_limit(
     return limit
 
 
+def _sort_limits_by_window(limits: List[Dict[str, Any]]) -> None:
+    """Keep quota windows consistent from shortest to longest."""
+    def window_minutes(limit: Mapping[str, Any]) -> float:
+        window = finite_number(limit.get("windowMinutes"))
+        return window if window is not None and window > 0 else math.inf
+
+    limits.sort(key=window_minutes)
+
+
 def _reset_credits(value: Any) -> Optional[Dict[str, Any]]:
     if not isinstance(value, Mapping):
         return None
@@ -431,6 +440,8 @@ def normalize_provider_payload(
                     seen_ids.add(limit_id)
                     limits.append(extra_limit)
 
+    _sort_limits_by_window(limits)
+
     checked = checked_at or utc_now()
     provider = {
         "id": provider_id,
@@ -514,6 +525,7 @@ def _sanitize_limits(value: Any) -> List[Dict[str, Any]]:
         if detail:
             item["detail"] = detail
         limits.append(item)
+    _sort_limits_by_window(limits)
     return limits
 
 

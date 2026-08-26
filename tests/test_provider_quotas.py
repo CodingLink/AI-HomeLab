@@ -78,11 +78,11 @@ class ProviderNormalizationTests(unittest.TestCase):
         self.assertEqual(provider["name"], "Kimi Code")
         self.assertEqual(
             [limit["remainingPercent"] for limit in provider["limits"]],
-            [100.0, 34.5, 70.6],
+            [34.5, 100.0, 70.6],
         )
         self.assertEqual(
             [limit["windowMinutes"] for limit in provider["limits"]],
-            [10080, 300, 43200],
+            [300, 10080, 43200],
         )
         self.assertNotIn("identity", provider)
         self.assertNotIn("account", provider)
@@ -459,6 +459,29 @@ class ProviderSnapshotServiceTests(unittest.TestCase):
         self.assertFalse(fresh["meta"]["stale"])
         self.assertEqual(fresh["meta"]["staleAfterSeconds"], 900)
         self.assertTrue(stale["meta"]["stale"])
+
+    def test_snapshot_limits_are_sorted_from_shortest_window_to_longest(self):
+        provider = {
+            "id": "kimi",
+            "status": "live",
+            "lastSuccessAt": "2026-08-13T03:10:00Z",
+            "balance": None,
+            "limits": [
+                {"id": "weekly", "remainingPercent": 73, "windowMinutes": 10080},
+                {"id": "unknown", "remainingPercent": 50},
+                {"id": "five-hour", "remainingPercent": 84, "windowMinutes": 300},
+            ],
+        }
+        write_snapshot(self.path, snapshot(provider))
+
+        payload = ProviderSnapshotService(
+            str(self.path), now_provider=lambda: FIXED_NOW
+        ).get_providers()
+
+        self.assertEqual(
+            [limit["id"] for limit in payload["providers"][0]["limits"]],
+            ["five-hour", "weekly", "unknown"],
+        )
 
     def test_snapshot_reset_credits_are_strictly_sanitized(self):
         provider = {

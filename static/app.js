@@ -55,6 +55,12 @@ const translations = {
     successRate: "成功率",
     successfulRequests: "{success} / {total} 次成功",
     totalTokens: "总 Token",
+    trendKicker: "TREND",
+    trendTitle: "Token 用量趋势",
+    trendInput: "输入",
+    trendOutput: "输出",
+    trendCache: "缓存",
+    trendCacheRate: "缓存率 {value}%",
     providerQuotas: "Provider 额度",
     remainingCapacity: "剩余额度",
     providerWaiting: "正在等待 CodexBar",
@@ -110,6 +116,11 @@ const translations = {
     fiveHourLimit: "5 小时限额",
     dailyLimit: "每日限额",
     weeklyLimit: "7 天限额",
+    weeklyRemaining: "本周剩余",
+    weeklyQuotaPlans: "覆盖 {count} 个周额度",
+    weeklyElapsed: "本周已过 {value}%",
+    weeklyPaceOk: "进度健康",
+    weeklyPaceFast: "消耗偏快",
     monthlyLimit: "月度限额",
     minuteWindowLimit: "{count} 分钟限额",
     hourWindowLimit: "{count} 小时限额",
@@ -194,6 +205,12 @@ const translations = {
     successRate: "Success Rate",
     successfulRequests: "{success} / {total} successful",
     totalTokens: "Total Tokens",
+    trendKicker: "TREND",
+    trendTitle: "Token Usage Trend",
+    trendInput: "Input",
+    trendOutput: "Output",
+    trendCache: "Cache",
+    trendCacheRate: "Cache rate {value}%",
     providerQuotas: "Provider Quotas",
     remainingCapacity: "Remaining Capacity",
     providerWaiting: "Waiting for CodexBar",
@@ -249,6 +266,11 @@ const translations = {
     fiveHourLimit: "5-hour limit",
     dailyLimit: "Daily limit",
     weeklyLimit: "7-day limit",
+    weeklyRemaining: "Week left",
+    weeklyQuotaPlans: "{count} weekly plans",
+    weeklyElapsed: "{value}% of week elapsed",
+    weeklyPaceOk: "On track",
+    weeklyPaceFast: "Burning fast",
     monthlyLimit: "Monthly limit",
     minuteWindowLimit: "{count}-minute limit",
     hourWindowLimit: "{count}-hour limit",
@@ -342,6 +364,19 @@ const elements = {
   tokensSourceHint: document.querySelector("#tokens-source-hint"),
   tokenInValue: document.querySelector("#token-in-value"),
   tokenOutValue: document.querySelector("#token-out-value"),
+  trendPanel: document.querySelector("#trend-panel"),
+  trendLegend: document.querySelector(".trend-legend"),
+  trendSvg: document.querySelector("#trend-svg"),
+  trendAxisStart: document.querySelector("#trend-axis-start"),
+  trendAxisEnd: document.querySelector("#trend-axis-end"),
+  trendTooltip: document.querySelector("#trend-tooltip"),
+  trendCacheRate: document.querySelector("#trend-cache-rate"),
+  trendCrosshair: document.querySelector("#trend-crosshair"),
+  weeklyQuota: document.querySelector("#weekly-quota"),
+  weeklyQuotaBar: document.querySelector("#weekly-quota-bar"),
+  weeklyQuotaValue: document.querySelector("#weekly-quota-value"),
+  weeklyQuotaSummary: document.querySelector("#weekly-quota-summary"),
+  weeklyQuotaProgress: document.querySelector("#weekly-quota-progress"),
   providerList: document.querySelector("#provider-list"),
   providerMeta: document.querySelector("#provider-meta"),
   activityList: document.querySelector("#activity-list"),
@@ -489,6 +524,27 @@ function formatDate(value, includeDate = true) {
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
+    hour12: false,
+  }).format(date);
+}
+
+function formatShortDate(value) {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  return new Intl.DateTimeFormat(locale(), {
+    month: "numeric",
+    day: "numeric",
+  }).format(date);
+}
+
+function formatHourLabel(value) {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  return new Intl.DateTimeFormat(locale(), {
+    hour: "2-digit",
+    minute: "2-digit",
     hour12: false,
   }).format(date);
 }
@@ -1011,6 +1067,220 @@ function renderSummary(payload, previousPayload = null) {
   );
 
   [elements.requestsValue, elements.modelValue, elements.successValue, elements.tokensValue].forEach(removeSkeleton);
+}
+
+const trendChartWidth = 600;
+const trendChartHeight = 120;
+const trendChartPadX = 4;
+const trendChartPadY = 12;
+let trendRenderedSignature = null;
+const trendSeriesVisible = { input: true, output: true, cache: true };
+let trendContext = null;
+
+const trendSeriesReaders = {
+  input: (bucket) => Number(bucket.inputTokens) || 0,
+  output: (bucket) => Number(bucket.outputTokens) || 0,
+  cache: (bucket) =>
+    (Number(bucket.cacheReadTokens) || 0) + (Number(bucket.cacheCreationTokens) || 0),
+};
+
+const trendSeriesLabelKeys = {
+  input: "trendInput",
+  output: "trendOutput",
+  cache: "trendCache",
+};
+
+function smoothTrendPath(points) {
+  if (points.length < 2) return "";
+  let d = `M ${points[0][0]},${points[0][1]}`;
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const p0 = points[Math.max(0, index - 1)];
+    const p1 = points[index];
+    const p2 = points[index + 1];
+    const p3 = points[Math.min(points.length - 1, index + 2)];
+    const c1x = p1[0] + (p2[0] - p0[0]) / 6;
+    const c1y = p1[1] + (p2[1] - p0[1]) / 6;
+    const c2x = p2[0] - (p3[0] - p1[0]) / 6;
+    const c2y = p2[1] - (p3[1] - p1[1]) / 6;
+    d += ` C ${c1x.toFixed(2)},${c1y.toFixed(2)} ${c2x.toFixed(2)},${c2y.toFixed(2)} ${p2[0]},${p2[1]}`;
+  }
+  return d;
+}
+
+function cacheRateOf(input, cache) {
+  const total = input + cache;
+  return total > 0 ? cache / total : null;
+}
+
+function hideTrendHover() {
+  elements.trendTooltip.hidden = true;
+  elements.trendCrosshair.hidden = true;
+  elements.trendSvg
+    .querySelectorAll(".trend-hover-dot")
+    .forEach((dot) => (dot.hidden = true));
+}
+
+function showTrendHover(index) {
+  if (!trendContext) return;
+  const { trend, pointsBySeries } = trendContext;
+  const bucket = trend[index];
+  if (!bucket) return;
+
+  const referencePoints = Object.values(pointsBySeries)[0];
+  const x = referencePoints[index][0];
+  elements.trendCrosshair.hidden = false;
+  elements.trendCrosshair.setAttribute("x1", String(x));
+  elements.trendCrosshair.setAttribute("x2", String(x));
+
+  elements.trendSvg.querySelectorAll(".trend-series").forEach((group) => {
+    const dot = group.querySelector(".trend-hover-dot");
+    const points = pointsBySeries[group.dataset.series];
+    if (!dot || !points || !trendSeriesVisible[group.dataset.series]) {
+      if (dot) dot.hidden = true;
+      return;
+    }
+    dot.hidden = false;
+    dot.setAttribute("cx", String(points[index][0]));
+    dot.setAttribute("cy", String(points[index][1]));
+  });
+
+  const tooltip = elements.trendTooltip;
+  tooltip.querySelector(".trend-tooltip-title").textContent =
+    trendContext.formatAxis(bucket.bucket);
+  const rows = tooltip.querySelector(".trend-tooltip-rows");
+  rows.replaceChildren(
+    ...Object.entries(trendSeriesReaders)
+      .filter(([key]) => trendSeriesVisible[key])
+      .map(([key, read]) => {
+        const row = document.createElement("p");
+        row.className = "trend-tooltip-row";
+        const dot = document.createElement("span");
+        dot.className = `trend-legend-dot dot-${key}`;
+        dot.setAttribute("aria-hidden", "true");
+        const label = document.createElement("span");
+        label.textContent = t(trendSeriesLabelKeys[key]);
+        const value = document.createElement("span");
+        value.className = "trend-tooltip-value";
+        value.textContent = formatCompact(read(bucket));
+        row.append(dot, label, value);
+        return row;
+      }),
+  );
+  const rate = cacheRateOf(
+    trendSeriesReaders.input(bucket),
+    trendSeriesReaders.cache(bucket),
+  );
+  const rateLine = tooltip.querySelector(".trend-tooltip-rate");
+  if (rate === null) {
+    rateLine.hidden = true;
+  } else {
+    rateLine.hidden = false;
+    rateLine.textContent = t("trendCacheRate", {
+      value: Math.round(rate * 100),
+    });
+  }
+
+  const chartBox = elements.trendSvg.getBoundingClientRect();
+  const px = (x / trendChartWidth) * chartBox.width;
+  tooltip.hidden = false;
+  tooltip.classList.toggle("is-left", px > chartBox.width - 70);
+  tooltip.classList.toggle("is-right", px < 70);
+  tooltip.style.left = `${(x / trendChartWidth) * 100}%`;
+}
+
+function renderTrend(payload) {
+  const trend = payload?.trend;
+  const granularity = payload?.meta?.granularity;
+  const visible =
+    (granularity === "day" || granularity === "hour") &&
+    Array.isArray(trend) &&
+    trend.length >= 2;
+  if (!visible) {
+    elements.trendPanel.hidden = true;
+    trendRenderedSignature = null;
+    trendContext = null;
+    hideTrendHover();
+    return;
+  }
+
+  const wasHidden = elements.trendPanel.hidden;
+  elements.trendPanel.hidden = false;
+
+  const seriesValues = Object.fromEntries(
+    Object.entries(trendSeriesReaders).map(([key, read]) => [
+      key,
+      trend.map((bucket) => read(bucket)),
+    ]),
+  );
+  const visibleMax = Math.max(
+    0,
+    ...Object.entries(seriesValues).flatMap(([key, values]) =>
+      trendSeriesVisible[key] ? values : [],
+    ),
+  );
+
+  const innerWidth = trendChartWidth - trendChartPadX * 2;
+  const innerHeight = trendChartHeight - trendChartPadY * 2;
+  const stepX = innerWidth / (trend.length - 1);
+  const baseline = trendChartHeight - trendChartPadY;
+  const toPoint = (value, index) => {
+    const x = trendChartPadX + stepX * index;
+    const y =
+      visibleMax > 0
+        ? trendChartPadY + innerHeight * (1 - value / visibleMax)
+        : baseline;
+    return [Number(x.toFixed(2)), Number(y.toFixed(2))];
+  };
+
+  const pointsBySeries = {};
+  elements.trendSvg.querySelectorAll(".trend-series").forEach((group) => {
+    const key = group.dataset.series;
+    const line = group.querySelector(".trend-line");
+    const fill = group.querySelector(".trend-fill");
+    const endDot = group.querySelector(".trend-end-dot");
+    if (!line || !fill || !endDot) return;
+    const points = seriesValues[key].map(toPoint);
+    pointsBySeries[key] = points;
+    const seriesVisibleNow = trendSeriesVisible[key] === true;
+    group.classList.toggle("is-muted", !seriesVisibleNow);
+    if (!seriesVisibleNow) return;
+    const linePath = smoothTrendPath(points);
+    const first = points[0];
+    const last = points[points.length - 1];
+    line.setAttribute("d", linePath);
+    fill.setAttribute(
+      "d",
+      `${linePath} L ${last[0]},${baseline} L ${first[0]},${baseline} Z`,
+    );
+    endDot.setAttribute("cx", String(last[0]));
+    endDot.setAttribute("cy", String(last[1]));
+  });
+
+  const formatAxis =
+    granularity === "hour" ? formatHourLabel : formatShortDate;
+  elements.trendAxisStart.textContent = formatAxis(trend[0].bucket);
+  elements.trendAxisEnd.textContent = formatAxis(trend[trend.length - 1].bucket);
+
+  const totalInput = seriesValues.input.reduce((sum, value) => sum + value, 0);
+  const totalCache = seriesValues.cache.reduce((sum, value) => sum + value, 0);
+  const rangeRate = cacheRateOf(totalInput, totalCache);
+  elements.trendCacheRate.textContent =
+    rangeRate === null ? "" : `· ${Math.round(rangeRate * 100)}%`;
+
+  trendContext = { trend, granularity, formatAxis, pointsBySeries };
+
+  const signature = `${state.range}:${state.app}:${trend.length}`;
+  if (wasHidden || signature !== trendRenderedSignature) {
+    trendRenderedSignature = signature;
+    playRowAnimation(
+      elements.trendSvg,
+      [
+        { opacity: 0, transform: "translate3d(0, 6px, 0)" },
+        { opacity: 1, transform: "translate3d(0, 0, 0)" },
+      ],
+      { duration: contentFadeDuration + 200, easing: listEasing },
+    );
+  }
 }
 
 function activityKey(item) {
@@ -1739,6 +2009,60 @@ function renderProviderResetCredits(node, provider, previousProvider, animateCha
   }
 }
 
+const weeklyRingCircumference = 2 * Math.PI * 36;
+
+function naturalWeekElapsed() {
+  const now = new Date();
+  const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  monday.setDate(monday.getDate() - ((now.getDay() + 6) % 7));
+  return Math.min(1, Math.max(0, (now - monday) / (7 * 24 * 3600 * 1000)));
+}
+
+function renderWeeklyQuota(providers) {
+  const weeklyRemaining = (providers || [])
+    .map((provider) =>
+      (provider.limits || [])
+        .filter((limit) => limit.windowMinutes === 10_080)
+        .reduce(
+          (lowest, limit) => Math.min(lowest, Number(limit.remainingPercent) || 0),
+          Infinity,
+        ),
+    )
+    .filter((value) => Number.isFinite(value));
+
+  if (!weeklyRemaining.length) {
+    elements.weeklyQuota.hidden = true;
+    return;
+  }
+  elements.weeklyQuota.hidden = false;
+
+  const average =
+    weeklyRemaining.reduce((sum, value) => sum + value, 0) / weeklyRemaining.length;
+  const fraction = Math.min(1, Math.max(0, average / 100));
+  const bar = elements.weeklyQuotaBar;
+  bar.style.strokeDasharray = String(weeklyRingCircumference);
+  bar.style.strokeDashoffset = String(weeklyRingCircumference * (1 - fraction));
+  bar.style.stroke =
+    average > 50 ? "var(--green)" : average >= 20 ? "var(--orange)" : "var(--red)";
+
+  elements.weeklyQuotaValue.textContent = `${Math.round(average)}%`;
+  elements.weeklyQuotaSummary.textContent = t("weeklyQuotaPlans", {
+    count: weeklyRemaining.length,
+  });
+
+  const elapsed = naturalWeekElapsed();
+  const onTrack = fraction >= elapsed - 0.0001;
+  const pace = document.createElement("span");
+  pace.className = onTrack ? "is-ok" : "is-fast";
+  pace.textContent = t(onTrack ? "weeklyPaceOk" : "weeklyPaceFast");
+  elements.weeklyQuotaProgress.replaceChildren(
+    document.createTextNode(
+      `${t("weeklyElapsed", { value: Math.round(elapsed * 100) })} · `,
+    ),
+    pace,
+  );
+}
+
 function renderProviders(payload, previousPayload = null, animateChanges = false) {
   const generatedAt = payload?.meta?.generatedAt;
   elements.providerMeta.textContent = payload?.meta?.stale
@@ -1748,6 +2072,7 @@ function renderProviders(payload, previousPayload = null, animateChanges = false
   const providers = (payload?.providers || []).filter(
     (provider) => provider.id !== "openrouter" || !officialOpenRouterCreditsAvailable(),
   );
+  renderWeeklyQuota(providers);
   if (!providers.length) {
     renderEmptyState(elements.providerList, t("providerNoProviders"));
     return;
@@ -2312,6 +2637,7 @@ function renderAI(previousPayload = null, animateChanges = false, renderProvider
   }
 
   if (state.source === "openrouter") {
+    elements.trendPanel.hidden = true;
     if (state.openrouterFailed) {
       renderOpenRouterFailure();
     } else if (state.openrouterPayload) {
@@ -2325,6 +2651,7 @@ function renderAI(previousPayload = null, animateChanges = false, renderProvider
 
   if (!state.payload) return;
   renderSummary(state.payload, previousPayload);
+  renderTrend(state.payload);
   renderActivity(state.payload, previousPayload, animateChanges);
   renderRanking(state.payload, previousPayload, animateChanges);
   renderFooter(state.payload);
@@ -2802,6 +3129,32 @@ elements.rangeFilter.addEventListener("click", (event) => {
   fadeAiContent();
   runPageLoad([() => loadDashboard()]);
 });
+
+elements.trendLegend.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-series]");
+  if (!button) return;
+  const series = button.dataset.series;
+  if (!(series in trendSeriesVisible)) return;
+  const visibleCount = Object.values(trendSeriesVisible).filter(Boolean).length;
+  if (trendSeriesVisible[series] && visibleCount === 1) return;
+  trendSeriesVisible[series] = !trendSeriesVisible[series];
+  button.setAttribute("aria-pressed", String(trendSeriesVisible[series]));
+  button.classList.toggle("is-off", !trendSeriesVisible[series]);
+  renderTrend(state.payload);
+});
+
+elements.trendSvg.addEventListener("pointermove", (event) => {
+  if (!trendContext) return;
+  const rect = elements.trendSvg.getBoundingClientRect();
+  if (rect.width <= 0) return;
+  const viewX = ((event.clientX - rect.left) / rect.width) * trendChartWidth;
+  const count = trendContext.trend.length;
+  const stepX = (trendChartWidth - trendChartPadX * 2) / (count - 1);
+  const index = Math.round((viewX - trendChartPadX) / stepX);
+  showTrendHover(Math.max(0, Math.min(count - 1, index)));
+});
+
+elements.trendSvg.addEventListener("pointerleave", hideTrendHover);
 
 elements.appFilter.addEventListener("click", (event) => {
   const button = event.target.closest("button[data-app]");

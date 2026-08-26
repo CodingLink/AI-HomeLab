@@ -196,6 +196,82 @@
           </article>
         </section>
 
+        <section id="trend-panel" class="panel trend-panel" aria-labelledby="trend-heading" hidden>
+          <div class="panel-heading">
+            <div>
+              <p class="panel-kicker" data-i18n="trendKicker">TREND</p>
+              <h2 id="trend-heading" data-i18n="trendTitle">Token 用量趋势</h2>
+            </div>
+            <div class="trend-legend" role="group" aria-label="Token 分类">
+              <button type="button" class="trend-legend-item" data-series="input" aria-pressed="true">
+                <span class="trend-legend-dot dot-input" aria-hidden="true"></span>
+                <span data-i18n="trendInput">输入</span>
+              </button>
+              <button type="button" class="trend-legend-item" data-series="output" aria-pressed="true">
+                <span class="trend-legend-dot dot-output" aria-hidden="true"></span>
+                <span data-i18n="trendOutput">输出</span>
+              </button>
+              <button type="button" class="trend-legend-item" data-series="cache" aria-pressed="true">
+                <span class="trend-legend-dot dot-cache" aria-hidden="true"></span>
+                <span data-i18n="trendCache">缓存</span>
+                <span class="trend-legend-rate" id="trend-cache-rate"></span>
+              </button>
+            </div>
+          </div>
+
+          <div class="trend-chart">
+            <svg id="trend-svg" viewBox="0 0 600 120" preserveAspectRatio="none" role="img">
+              <defs>
+                <linearGradient id="trend-fill-input" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0" stop-color="#1db36c" stop-opacity="0.14" />
+                  <stop offset="1" stop-color="#1db36c" stop-opacity="0" />
+                </linearGradient>
+                <linearGradient id="trend-fill-output" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0" stop-color="#d84f71" stop-opacity="0.14" />
+                  <stop offset="1" stop-color="#d84f71" stop-opacity="0" />
+                </linearGradient>
+                <linearGradient id="trend-fill-cache" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0" stop-color="#3f82d7" stop-opacity="0.14" />
+                  <stop offset="1" stop-color="#3f82d7" stop-opacity="0" />
+                </linearGradient>
+              </defs>
+              <line class="trend-grid" x1="4" x2="596" y1="36" y2="36" />
+              <line class="trend-grid" x1="4" x2="596" y1="60" y2="60" />
+              <line class="trend-grid" x1="4" x2="596" y1="84" y2="84" />
+              <rect class="trend-capture" x="0" y="0" width="600" height="120" fill="transparent" />
+              <g class="trend-series series-input" data-series="input">
+                <path class="trend-fill fill-input" d="" />
+                <path class="trend-line line-input" d="" />
+                <circle class="trend-end-dot" r="2" cx="-20" cy="-20" />
+                <circle class="trend-hover-dot" r="3" cx="-20" cy="-20" hidden />
+              </g>
+              <g class="trend-series series-output" data-series="output">
+                <path class="trend-fill fill-output" d="" />
+                <path class="trend-line line-output" d="" />
+                <circle class="trend-end-dot" r="2" cx="-20" cy="-20" />
+                <circle class="trend-hover-dot" r="3" cx="-20" cy="-20" hidden />
+              </g>
+              <g class="trend-series series-cache" data-series="cache">
+                <path class="trend-fill fill-cache" d="" />
+                <path class="trend-line line-cache" d="" />
+                <circle class="trend-end-dot" r="2" cx="-20" cy="-20" />
+                <circle class="trend-hover-dot" r="3" cx="-20" cy="-20" hidden />
+              </g>
+              <line id="trend-crosshair" class="trend-crosshair" x1="-20" x2="-20" y1="12" y2="108" hidden />
+            </svg>
+            <div id="trend-tooltip" class="trend-tooltip" hidden>
+              <p class="trend-tooltip-title"></p>
+              <div class="trend-tooltip-rows"></div>
+              <p class="trend-tooltip-rate"></p>
+            </div>
+          </div>
+
+          <div class="trend-axis">
+            <span id="trend-axis-start">—</span>
+            <span id="trend-axis-end">—</span>
+          </div>
+        </section>
+
         <div id="ai-provider-slot" class="provider-slot">
         <section id="provider-panel" class="provider-panel" aria-labelledby="provider-heading">
           <div class="panel-heading provider-panel-heading">
@@ -204,6 +280,23 @@
               <h2 id="provider-heading" data-i18n="remainingCapacity">剩余额度</h2>
             </div>
             <span id="provider-meta" class="panel-meta">正在等待 CodexBar</span>
+          </div>
+
+          <div id="weekly-quota" class="weekly-quota" hidden>
+            <div class="weekly-quota-ring">
+              <svg viewBox="0 0 84 84" aria-hidden="true">
+                <circle class="weekly-quota-track" cx="42" cy="42" r="36" />
+                <circle class="weekly-quota-bar" id="weekly-quota-bar" cx="42" cy="42" r="36" />
+              </svg>
+              <div class="weekly-quota-center">
+                <span id="weekly-quota-value">—</span>
+                <span class="weekly-quota-caption" data-i18n="weeklyRemaining">本周剩余</span>
+              </div>
+            </div>
+            <div class="weekly-quota-info">
+              <p id="weekly-quota-summary" class="weekly-quota-summary">—</p>
+              <p id="weekly-quota-progress" class="weekly-quota-progress">—</p>
+            </div>
           </div>
 
           <div id="provider-list" class="provider-list" aria-live="polite">
