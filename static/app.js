@@ -116,11 +116,29 @@ const translations = {
     fiveHourLimit: "5 小时限额",
     dailyLimit: "每日限额",
     weeklyLimit: "7 天限额",
-    weeklyRemaining: "本周剩余",
-    weeklyQuotaPlans: "覆盖 {count} 个周额度",
-    weeklyElapsed: "本周已过 {value}%",
+    weeklyMinimumRemaining: "最低 7 天剩余",
+    weeklyWindowCount: "{count} 个独立 7 天窗口",
+    weeklyDelayedCount: "{count} 个数据延迟",
+    weeklyMostAtRisk: "最需关注：{provider}",
+    weeklyHistoricalMinimum: "历史最低：{provider}",
     weeklyPaceOk: "进度健康",
     weeklyPaceFast: "消耗偏快",
+    weeklyPaceCritical: "额度紧张",
+    weeklyPaceUnknown: "预测未知",
+    weeklyWaitingRefresh: "等待刷新",
+    weeklyDataDelayed: "数据延迟",
+    weeklyResetAt: "{time} 重置",
+    weeklyResetUnknown: "重置时间未知",
+    weeklyEarlyForecast: "初步预测：{forecast}",
+    weeklyForecastExhaust: "预计 {eta}后耗尽 · 比重置早 {lead}",
+    weeklyForecastSurvives: "本窗口预计不会耗尽 · 重置时预计剩余 {percent}%",
+    weeklyForecastUnknown: "预测未知",
+    weeklyForecastWaiting: "等待刷新后再预测",
+    weeklyForecastDelayed: "数据延迟，暂不预测",
+    durationMinutes: "{count} 分钟",
+    durationHours: "{count} 小时",
+    durationDays: "{count} 天",
+    durationDaysHours: "{days} 天 {hours} 小时",
     monthlyLimit: "月度限额",
     minuteWindowLimit: "{count} 分钟限额",
     hourWindowLimit: "{count} 小时限额",
@@ -266,11 +284,29 @@ const translations = {
     fiveHourLimit: "5-hour limit",
     dailyLimit: "Daily limit",
     weeklyLimit: "7-day limit",
-    weeklyRemaining: "Week left",
-    weeklyQuotaPlans: "{count} weekly plans",
-    weeklyElapsed: "{value}% of week elapsed",
+    weeklyMinimumRemaining: "Lowest 7-day remaining",
+    weeklyWindowCount: "{count} independent 7-day windows",
+    weeklyDelayedCount: "{count} delayed",
+    weeklyMostAtRisk: "Most at risk: {provider}",
+    weeklyHistoricalMinimum: "Historical low: {provider}",
     weeklyPaceOk: "On track",
     weeklyPaceFast: "Burning fast",
+    weeklyPaceCritical: "Quota tight",
+    weeklyPaceUnknown: "Forecast unknown",
+    weeklyWaitingRefresh: "Waiting for refresh",
+    weeklyDataDelayed: "Data delayed",
+    weeklyResetAt: "Resets {time}",
+    weeklyResetUnknown: "Reset time unknown",
+    weeklyEarlyForecast: "Early forecast: {forecast}",
+    weeklyForecastExhaust: "Expected to run out in {eta} · {lead} before reset",
+    weeklyForecastSurvives: "Expected to last this window · {percent}% left at reset",
+    weeklyForecastUnknown: "Forecast unknown",
+    weeklyForecastWaiting: "Waiting for refresh before forecasting",
+    weeklyForecastDelayed: "Data delayed; forecast paused",
+    durationMinutes: "{count} min",
+    durationHours: "{count} hr",
+    durationDays: "{count} days",
+    durationDaysHours: "{days}d {hours}h",
     monthlyLimit: "Monthly limit",
     minuteWindowLimit: "{count}-minute limit",
     hourWindowLimit: "{count}-hour limit",
@@ -377,6 +413,7 @@ const elements = {
   weeklyQuotaValue: document.querySelector("#weekly-quota-value"),
   weeklyQuotaSummary: document.querySelector("#weekly-quota-summary"),
   weeklyQuotaProgress: document.querySelector("#weekly-quota-progress"),
+  weeklyQuotaList: document.querySelector("#weekly-quota-list"),
   providerList: document.querySelector("#provider-list"),
   providerMeta: document.querySelector("#provider-meta"),
   activityList: document.querySelector("#activity-list"),
@@ -2011,55 +2048,231 @@ function renderProviderResetCredits(node, provider, previousProvider, animateCha
 
 const weeklyRingCircumference = 2 * Math.PI * 36;
 
-function naturalWeekElapsed() {
-  const now = new Date();
-  const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  monday.setDate(monday.getDate() - ((now.getDay() + 6) % 7));
-  return Math.min(1, Math.max(0, (now - monday) / (7 * 24 * 3600 * 1000)));
+function formatWeeklyPercent(value, maximumFractionDigits = 1) {
+  if (!Number.isFinite(value)) return "—";
+  return new Intl.NumberFormat(locale(), {
+    minimumFractionDigits: 0,
+    maximumFractionDigits,
+  }).format(value);
 }
 
-function renderWeeklyQuota(providers) {
-  const weeklyRemaining = (providers || [])
-    .map((provider) =>
-      (provider.limits || [])
-        .filter((limit) => limit.windowMinutes === 10_080)
-        .reduce(
-          (lowest, limit) => Math.min(lowest, Number(limit.remainingPercent) || 0),
-          Infinity,
-        ),
-    )
-    .filter((value) => Number.isFinite(value));
+function formatWeeklyDuration(milliseconds) {
+  if (!Number.isFinite(milliseconds) || milliseconds < 0) return "—";
+  const roundedMinutes = Math.max(1, Math.round(milliseconds / 60_000));
+  if (roundedMinutes < 60) {
+    return t("durationMinutes", { count: formatInteger(roundedMinutes) });
+  }
+  const roundedHours = Math.max(1, Math.round(milliseconds / 3_600_000));
+  if (roundedHours < 48) {
+    return t("durationHours", { count: formatInteger(roundedHours) });
+  }
+  const days = Math.floor(roundedHours / 24);
+  const hours = roundedHours % 24;
+  return hours
+    ? t("durationDaysHours", {
+        days: formatInteger(days),
+        hours: formatInteger(hours),
+      })
+    : t("durationDays", { count: formatInteger(days) });
+}
 
-  if (!weeklyRemaining.length) {
+function formatWeeklyEta(milliseconds) {
+  if (!Number.isFinite(milliseconds) || milliseconds < 0) return "—";
+  const roundedMinutes = Math.max(1, Math.round(milliseconds / 60_000));
+  if (roundedMinutes < 60) {
+    return t("durationMinutes", { count: formatInteger(roundedMinutes) });
+  }
+  return t("durationHours", {
+    count: formatInteger(Math.max(1, Math.round(milliseconds / 3_600_000))),
+  });
+}
+
+function formatWeeklyResetDate(value) {
+  if (!Number.isFinite(value)) return "—";
+  return new Intl.DateTimeFormat(locale(), {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(new Date(value));
+}
+
+function weeklyStateKey(state) {
+  return {
+    healthy: "weeklyPaceOk",
+    fast: "weeklyPaceFast",
+    critical: "weeklyPaceCritical",
+    unknown: "weeklyPaceUnknown",
+    waiting: "weeklyWaitingRefresh",
+    stale: "weeklyDataDelayed",
+  }[state] || "weeklyPaceUnknown";
+}
+
+function weeklyVisualState(plan) {
+  if (plan.dataState !== "live") return "stale";
+  return ["healthy", "fast", "critical", "unknown", "waiting"].includes(plan.pace)
+    ? plan.pace
+    : "unknown";
+}
+
+function weeklyForecastText(plan) {
+  const forecast = plan.forecast;
+  if (forecast?.kind === "exhausts") {
+    const text = t("weeklyForecastExhaust", {
+      eta: formatWeeklyEta(forecast.etaMs),
+      lead: formatWeeklyDuration(forecast.leadMs),
+    });
+    return forecast.early ? t("weeklyEarlyForecast", { forecast: text }) : text;
+  }
+  if (forecast?.kind === "survives") {
+    const text = t("weeklyForecastSurvives", {
+      percent: formatWeeklyPercent(forecast.projectedRemainingPercent, 0),
+    });
+    return forecast.early ? t("weeklyEarlyForecast", { forecast: text }) : text;
+  }
+  if (forecast?.kind === "waiting") return t("weeklyForecastWaiting");
+  if (forecast?.kind === "stale") return t("weeklyForecastDelayed");
+  return t("weeklyForecastUnknown");
+}
+
+function createWeeklyQuotaItem(plan, duplicateProviderIds, highlighted) {
+  const item = document.createElement("article");
+  const visualState = weeklyVisualState(plan);
+  item.className = `weekly-quota-item is-${visualState}`;
+  item.setAttribute("role", "listitem");
+  if (highlighted) item.classList.add("is-highlighted");
+
+  const heading = document.createElement("div");
+  heading.className = "weekly-quota-item-heading";
+  const identity = document.createElement("div");
+  identity.className = "weekly-quota-identity";
+  const name = document.createElement("span");
+  name.className = "weekly-quota-plan-name";
+  name.textContent = plan.providerName;
+  identity.append(name);
+  if (duplicateProviderIds.has(plan.providerId)) {
+    const limitId = document.createElement("span");
+    limitId.className = "weekly-quota-plan-id";
+    limitId.textContent = plan.limitId;
+    identity.append(limitId);
+  }
+  const remaining = document.createElement("span");
+  remaining.className = "weekly-quota-plan-remaining";
+  remaining.textContent = Number.isFinite(plan.remainingPercent)
+    ? `${formatWeeklyPercent(plan.remainingPercent)}%`
+    : "—";
+  heading.append(identity, remaining);
+
+  const metadata = document.createElement("div");
+  metadata.className = "weekly-quota-metadata";
+  const stateLabel = document.createElement("span");
+  stateLabel.className = `weekly-quota-state is-${visualState}`;
+  stateLabel.textContent = t(weeklyStateKey(visualState));
+  metadata.append(stateLabel);
+
+  if (Number.isFinite(plan.resetAtMs)) {
+    const reset = document.createElement("time");
+    reset.className = "weekly-quota-reset";
+    reset.dateTime = new Date(plan.resetAtMs).toISOString();
+    reset.textContent = t("weeklyResetAt", {
+      time: formatWeeklyResetDate(plan.resetAtMs),
+    });
+    metadata.append(reset);
+  } else {
+    const reset = document.createElement("span");
+    reset.className = "weekly-quota-reset";
+    reset.textContent = t("weeklyResetUnknown");
+    metadata.append(reset);
+  }
+
+  const forecast = document.createElement("p");
+  forecast.className = `weekly-quota-forecast is-${visualState}`;
+  forecast.textContent = weeklyForecastText(plan);
+  item.append(heading, metadata, forecast);
+  return item;
+}
+
+function renderWeeklyQuota(providers, generatedAt, snapshotStale = false) {
+  const quotaLogic = window.HomeDashWeeklyQuota;
+  const windows = quotaLogic?.collectWeeklyWindows(providers, {
+    generatedAt,
+    nowMs: Date.now(),
+    snapshotStale,
+  }) || [];
+
+  if (!windows.length) {
     elements.weeklyQuota.hidden = true;
+    elements.weeklyQuotaList.replaceChildren();
     return;
   }
   elements.weeklyQuota.hidden = false;
 
-  const average =
-    weeklyRemaining.reduce((sum, value) => sum + value, 0) / weeklyRemaining.length;
-  const fraction = Math.min(1, Math.max(0, average / 100));
+  const summary = quotaLogic.summarizeWeeklyWindows(windows);
+  const remaining = summary.ringRemainingPercent;
+  const fraction = Number.isFinite(remaining)
+    ? Math.min(1, Math.max(0, remaining / 100))
+    : 0;
   const bar = elements.weeklyQuotaBar;
   bar.style.strokeDasharray = String(weeklyRingCircumference);
   bar.style.strokeDashoffset = String(weeklyRingCircumference * (1 - fraction));
   bar.style.stroke =
-    average > 50 ? "var(--green)" : average >= 20 ? "var(--orange)" : "var(--red)";
+    summary.ringMode === "stale" || !Number.isFinite(remaining)
+      ? "var(--muted)"
+      : remaining > 50
+        ? "var(--green)"
+        : remaining >= 20
+          ? "var(--orange)"
+          : "var(--red)";
+  elements.weeklyQuota.classList.toggle("has-only-stale", summary.ringMode === "stale");
+  elements.weeklyQuotaValue.textContent = Number.isFinite(remaining)
+    ? `${formatWeeklyPercent(remaining, 0)}%`
+    : "—";
 
-  elements.weeklyQuotaValue.textContent = `${Math.round(average)}%`;
-  elements.weeklyQuotaSummary.textContent = t("weeklyQuotaPlans", {
-    count: weeklyRemaining.length,
+  const worst = summary.worst;
+  if (worst) {
+    const visualState = weeklyVisualState(worst);
+    const summaryText = t(
+      summary.ringMode === "stale" ? "weeklyHistoricalMinimum" : "weeklyMostAtRisk",
+      { provider: worst.providerName },
+    );
+    const stateLabel = document.createElement("span");
+    stateLabel.className = `weekly-quota-state is-${visualState}`;
+    stateLabel.textContent = t(weeklyStateKey(visualState));
+    elements.weeklyQuotaSummary.replaceChildren(
+      document.createTextNode(`${summaryText} · `),
+      stateLabel,
+    );
+  } else {
+    elements.weeklyQuotaSummary.textContent = t("weeklyPaceUnknown");
+  }
+
+  const progressNodes = [
+    document.createTextNode(t("weeklyWindowCount", { count: windows.length })),
+  ];
+  if (summary.staleWindows.length) {
+    const delayed = document.createElement("span");
+    delayed.className = "is-stale";
+    delayed.textContent = t("weeklyDelayedCount", {
+      count: summary.staleWindows.length,
+    });
+    progressNodes.push(document.createTextNode(" · "), delayed);
+  }
+  elements.weeklyQuotaProgress.replaceChildren(...progressNodes);
+
+  const providerCounts = new Map();
+  windows.forEach((plan) => {
+    providerCounts.set(plan.providerId, (providerCounts.get(plan.providerId) || 0) + 1);
   });
-
-  const elapsed = naturalWeekElapsed();
-  const onTrack = fraction >= elapsed - 0.0001;
-  const pace = document.createElement("span");
-  pace.className = onTrack ? "is-ok" : "is-fast";
-  pace.textContent = t(onTrack ? "weeklyPaceOk" : "weeklyPaceFast");
-  elements.weeklyQuotaProgress.replaceChildren(
-    document.createTextNode(
-      `${t("weeklyElapsed", { value: Math.round(elapsed * 100) })} · `,
+  const duplicateProviderIds = new Set(
+    [...providerCounts.entries()]
+      .filter(([, count]) => count > 1)
+      .map(([providerId]) => providerId),
+  );
+  elements.weeklyQuotaList.replaceChildren(
+    ...summary.windows.map((plan) =>
+      createWeeklyQuotaItem(plan, duplicateProviderIds, plan.key === worst?.key),
     ),
-    pace,
   );
 }
 
@@ -2072,7 +2285,7 @@ function renderProviders(payload, previousPayload = null, animateChanges = false
   const providers = (payload?.providers || []).filter(
     (provider) => provider.id !== "openrouter" || !officialOpenRouterCreditsAvailable(),
   );
-  renderWeeklyQuota(providers);
+  renderWeeklyQuota(providers, generatedAt, Boolean(payload?.meta?.stale));
   if (!providers.length) {
     renderEmptyState(elements.providerList, t("providerNoProviders"));
     return;

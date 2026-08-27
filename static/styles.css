@@ -588,7 +588,7 @@ button {
 
 .weekly-quota {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 18px;
   margin: 0 21px 14px;
   padding: 14px 16px;
@@ -599,8 +599,8 @@ button {
 
 .weekly-quota-ring {
   position: relative;
-  width: 84px;
-  height: 84px;
+  width: 96px;
+  height: 96px;
   flex: none;
 }
 
@@ -649,27 +649,212 @@ button {
 }
 
 .weekly-quota-caption {
+  max-width: 76px;
+  text-align: center;
   font-size: 10px;
+  line-height: 1.15;
   color: var(--muted);
 }
 
+.weekly-quota-info {
+  min-width: 0;
+  flex: 1;
+}
+
 .weekly-quota-summary {
+  margin: 2px 0 0;
   font-size: 13px;
+  font-weight: 620;
   color: var(--ink);
 }
 
 .weekly-quota-progress {
-  margin-top: 3px;
+  margin: 4px 0 0;
   font-size: 12px;
   color: var(--muted);
 }
 
-.weekly-quota-progress .is-ok {
+.weekly-quota-progress .is-stale {
+  color: var(--muted-dark);
+}
+
+.weekly-quota-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(245px, 1fr));
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.weekly-quota-item {
+  min-width: 0;
+  padding: 10px 11px 11px;
+  border: 1px solid var(--line-soft);
+  border-left: 3px solid var(--muted);
+  border-radius: 9px;
+  background: var(--card);
+}
+
+.weekly-quota-item.is-highlighted {
+  box-shadow: 0 0 0 1px rgba(24, 24, 23, 0.035);
+}
+
+.weekly-quota-item.is-healthy {
+  border-left-color: var(--green);
+}
+
+.weekly-quota-item.is-fast {
+  border-left-color: var(--orange);
+}
+
+.weekly-quota-item.is-critical {
+  border-left-color: var(--red);
+}
+
+.weekly-quota-item.is-waiting {
+  border-left-color: var(--blue);
+}
+
+.weekly-quota-item.is-stale {
+  border-left-color: var(--muted);
+  background: #f7f7f5;
+}
+
+.weekly-quota-item-heading,
+.weekly-quota-metadata {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.weekly-quota-identity {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.weekly-quota-plan-name {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.weekly-quota-plan-id {
+  flex: 0 0 auto;
+  padding: 1px 5px;
+  border: 1px solid var(--line-soft);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.35;
+}
+
+.weekly-quota-plan-remaining {
+  flex: 0 0 auto;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 670;
+  font-variant-numeric: tabular-nums;
+}
+
+.weekly-quota-metadata {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.weekly-quota-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted-dark);
+}
+
+.weekly-quota-state::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.weekly-quota-state.is-healthy {
   color: var(--green);
 }
 
-.weekly-quota-progress .is-fast {
+.weekly-quota-state.is-healthy::before {
+  background: var(--green);
+}
+
+.weekly-quota-state.is-fast {
   color: var(--orange);
+}
+
+.weekly-quota-state.is-fast::before {
+  background: var(--orange);
+}
+
+.weekly-quota-state.is-critical {
+  color: var(--red);
+}
+
+.weekly-quota-state.is-critical::before {
+  background: var(--red);
+}
+
+.weekly-quota-state.is-waiting {
+  color: var(--blue);
+}
+
+.weekly-quota-state.is-waiting::before {
+  background: var(--blue);
+}
+
+.weekly-quota-state.is-stale {
+  color: var(--muted-dark);
+}
+
+.weekly-quota-reset {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.weekly-quota-forecast {
+  min-height: 2.8em;
+  margin: 7px 0 0;
+  color: var(--muted-dark);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.weekly-quota-forecast.is-fast {
+  color: #a96516;
+}
+
+.weekly-quota-forecast.is-critical {
+  color: var(--red);
+}
+
+.weekly-quota-forecast.is-waiting {
+  color: var(--blue);
+}
+
+.weekly-quota-forecast.is-stale,
+.weekly-quota-forecast.is-unknown {
+  color: var(--muted);
+}
+
+.weekly-quota.has-only-stale .weekly-quota-center > span:first-child {
+  color: var(--muted-dark);
 }
 
 .provider-list {
@@ -1978,6 +2163,21 @@ button {
   .provider-list {
     grid-template-columns: minmax(0, 1fr);
     padding-inline: 14px;
+  }
+
+  .weekly-quota {
+    align-items: stretch;
+    flex-direction: column;
+    margin-inline: 14px;
+    padding-inline: 13px;
+  }
+
+  .weekly-quota-ring {
+    align-self: center;
+  }
+
+  .weekly-quota-list {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .clash-panel-heading {

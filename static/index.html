@@ -11,6 +11,7 @@
     <title>HomeDash · Home</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="/styles.css" />
+    <script src="/weekly-quota-logic.js" defer></script>
     <script src="/app.js" defer></script>
   </head>
   <body>
@@ -290,12 +291,13 @@
               </svg>
               <div class="weekly-quota-center">
                 <span id="weekly-quota-value">—</span>
-                <span class="weekly-quota-caption" data-i18n="weeklyRemaining">本周剩余</span>
+                <span class="weekly-quota-caption" data-i18n="weeklyMinimumRemaining">最低 7 天剩余</span>
               </div>
             </div>
             <div class="weekly-quota-info">
               <p id="weekly-quota-summary" class="weekly-quota-summary">—</p>
               <p id="weekly-quota-progress" class="weekly-quota-progress">—</p>
+              <div id="weekly-quota-list" class="weekly-quota-list" role="list"></div>
             </div>
           </div>
 

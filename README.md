@@ -17,7 +17,9 @@
 - 本地 / OpenRouter 双数据源切换,互不影响
 - CC Switch 用量汇总:请求数、主力模型、成功率、总 Token(含输入/输出拆分)
 - 时间范围(今日 / 7 天 / 30 天)与应用(全部 / Codex / Claude)筛选
+- Token 用量趋势:输入、输出与缓存曲线,支持单独开关和悬浮查看
 - CodexBar Provider 额度:按量付费显示余额,Coding plan 显示剩余额度进度条
+- 独立 7 天额度概览:显示最低剩余、窗口风险、重置时间和消耗预测
 - 最近活动:每次调用的 TTFT / Time / TPS,进行中的调用实时混入
 - 模型排行:本地按 Token 占比,OpenRouter 按 credits 占比
 
@@ -151,6 +153,8 @@ docker compose down
 
 ```bash
 PYTHONPATH=. PYTHONPYCACHEPREFIX=/tmp/cc-dashboard-pycache python3 -m unittest discover -s tests -v
+node --test tests/weekly_quota_logic.test.js
+node --check static/weekly-quota-logic.js
 node --check static/app.js
 ```
 
