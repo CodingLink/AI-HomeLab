@@ -22,6 +22,11 @@ const translations = {
     transportMixed: "混合路径",
     transportIdle: "无活动连接",
     transportUnknown: "未知",
+    transportDirectCount: "直连 {count} 台",
+    transportDerpCount: "DERP {count} 台",
+    transportPeerRelayCount: "Peer Relay {count} 台",
+    transportUnknownCount: "未知 {count} 台",
+    transportActivePeers: "共 {count} 台活动设备",
     homeDerp: "Home DERP",
     derpLatency: "DERP 延迟",
     derpRoundTrip: "当前 Home DERP 往返延迟",
@@ -41,6 +46,7 @@ const translations = {
     disconnected: "连接中断",
     localOnly: "本机",
     loadingPage: "正在加载页面数据",
+    trendAriaLabel: "Token 用量趋势图",
     localData: "本地",
     today: "今日",
     sevenDays: "7 天",
@@ -190,6 +196,11 @@ const translations = {
     transportMixed: "Mixed Paths",
     transportIdle: "No Active Link",
     transportUnknown: "Unknown",
+    transportDirectCount: "{count} direct",
+    transportDerpCount: "{count} DERP",
+    transportPeerRelayCount: "{count} Peer Relay",
+    transportUnknownCount: "{count} unknown",
+    transportActivePeers: "{count} active devices",
     homeDerp: "Home DERP",
     derpLatency: "DERP Latency",
     derpRoundTrip: "Round-trip latency to the current Home DERP",
@@ -209,6 +220,7 @@ const translations = {
     disconnected: "disconnected",
     localOnly: "local",
     loadingPage: "Loading dashboard data",
+    trendAriaLabel: "Token usage trend chart",
     localData: "Local",
     today: "Today",
     sevenDays: "7 days",
@@ -890,6 +902,34 @@ function transportLabel(mode) {
   return t(keys[mode] || "transportUnknown");
 }
 
+function transportCountSummary(peerCounts) {
+  if (!peerCounts || typeof peerCounts !== "object") return null;
+  const keys = ["active", "direct", "derp", "peerRelay", "unknown"];
+  if (!keys.every((key) => Number.isSafeInteger(peerCounts[key]) && peerCounts[key] >= 0)) {
+    return null;
+  }
+  const categorizedCount = ["direct", "derp", "peerRelay", "unknown"]
+    .reduce((total, key) => total + peerCounts[key], 0);
+  if (categorizedCount !== peerCounts.active) return null;
+
+  const extras = [];
+  if (peerCounts.peerRelay) {
+    extras.push(t("transportPeerRelayCount", { count: formatInteger(peerCounts.peerRelay) }));
+  }
+  if (peerCounts.unknown) {
+    extras.push(t("transportUnknownCount", { count: formatInteger(peerCounts.unknown) }));
+  }
+  return {
+    value: [
+      t("transportDerpCount", { count: formatInteger(peerCounts.derp) }),
+      t("transportDirectCount", { count: formatInteger(peerCounts.direct) }),
+    ].join(" · "),
+    hint: extras.length
+      ? extras.join(" · ")
+      : t("transportActivePeers", { count: formatInteger(peerCounts.active) }),
+  };
+}
+
 function renderTailscale(payload, previousPayload = null) {
   const connection = payload?.connection || {};
   const derp = payload?.derp;
@@ -918,10 +958,13 @@ function renderTailscale(payload, previousPayload = null) {
   }`;
   elements.tailscaleStatusHint.textContent = t("privateNetwork");
 
-  elements.tailscaleTransportValue.textContent = transportLabel(connection.transport);
+  const peerSummary = connection.status === "online"
+    ? transportCountSummary(connection.peerCounts)
+    : null;
+  elements.tailscaleTransportValue.textContent = peerSummary?.value || transportLabel(connection.transport);
   elements.tailscaleTransportValue.title = elements.tailscaleTransportValue.textContent;
   removeSkeleton(elements.tailscaleTransportValue);
-  elements.tailscaleTransportHint.textContent = t("transportScope");
+  elements.tailscaleTransportHint.textContent = peerSummary?.hint || t("transportScope");
 
   elements.tailscaleDerpValue.textContent = derp?.name || "—";
   elements.tailscaleDerpValue.title = derp?.name || "";
@@ -1115,10 +1158,13 @@ const trendSeriesVisible = { input: true, output: true, cache: true };
 let trendContext = null;
 
 const trendSeriesReaders = {
-  input: (bucket) => Number(bucket.inputTokens) || 0,
-  output: (bucket) => Number(bucket.outputTokens) || 0,
+  input: (bucket) => Math.max(0, Number(bucket.inputTokens) || 0),
+  output: (bucket) => Math.max(0, Number(bucket.outputTokens) || 0),
   cache: (bucket) =>
-    (Number(bucket.cacheReadTokens) || 0) + (Number(bucket.cacheCreationTokens) || 0),
+    Math.max(
+      0,
+      (Number(bucket.cacheReadTokens) || 0) + (Number(bucket.cacheCreationTokens) || 0),
+    ),
 };
 
 const trendSeriesLabelKeys = {
@@ -1129,17 +1175,19 @@ const trendSeriesLabelKeys = {
 
 function smoothTrendPath(points) {
   if (points.length < 2) return "";
-  let d = `M ${points[0][0]},${points[0][1]}`;
+  const maxY = trendChartHeight - trendChartPadY;
+  const clampY = (y) => Math.min(y, maxY);
+  let d = `M ${points[0][0]},${clampY(points[0][1])}`;
   for (let index = 0; index < points.length - 1; index += 1) {
     const p0 = points[Math.max(0, index - 1)];
     const p1 = points[index];
     const p2 = points[index + 1];
     const p3 = points[Math.min(points.length - 1, index + 2)];
     const c1x = p1[0] + (p2[0] - p0[0]) / 6;
-    const c1y = p1[1] + (p2[1] - p0[1]) / 6;
+    const c1y = clampY(p1[1] + (p2[1] - p0[1]) / 6);
     const c2x = p2[0] - (p3[0] - p1[0]) / 6;
-    const c2y = p2[1] - (p3[1] - p1[1]) / 6;
-    d += ` C ${c1x.toFixed(2)},${c1y.toFixed(2)} ${c2x.toFixed(2)},${c2y.toFixed(2)} ${p2[0]},${p2[1]}`;
+    const c2y = clampY(p2[1] - (p3[1] - p1[1]) / 6);
+    d += ` C ${c1x.toFixed(2)},${c1y.toFixed(2)} ${c2x.toFixed(2)},${c2y.toFixed(2)} ${p2[0]},${clampY(p2[1])}`;
   }
   return d;
 }
@@ -3028,6 +3076,7 @@ function renderShell({ transition = false } = {}) {
   elements.languageToggle.setAttribute("aria-label", languageLabel);
   elements.languageToggle.title = languageLabel;
   elements.pageLoader.setAttribute("aria-label", t("loadingPage"));
+  elements.trendSvg.setAttribute("aria-label", t("trendAriaLabel"));
 
   const isHome = state.view === "home";
   const previousView = state.renderedView;

@@ -11,8 +11,10 @@ from app.tailscale_status import (
     TailscaleCollector,
     TailscaleSnapshotService,
     TailscaleSnapshotUnavailable,
+    classify_transport_counts,
     classify_transport,
     normalize_tailscale_payload,
+    sanitize_snapshot,
     write_snapshot,
 )
 
@@ -89,6 +91,27 @@ class TransportClassificationTests(unittest.TestCase):
             "unknown",
         )
 
+    def test_counts_active_peers_and_preserves_classification_precedence(self):
+        peers = [
+            {"Active": True, "CurAddr": "192.0.2.1:1234", "Relay": "sin"},
+            {"Active": True, "Relay": "sin"},
+            {"Active": True, "PeerRelay": "peer-key", "Relay": "sin"},
+            {"Active": True, "HostName": "private"},
+            {"Active": False, "CurAddr": "192.0.2.2:1234"},
+        ]
+
+        self.assertEqual(
+            classify_transport_counts(status_payload(peers=peers)),
+            {"direct": 1, "derp": 1, "peerRelay": 1, "unknown": 1, "active": 4},
+        )
+        self.assertEqual(classify_transport(status_payload(peers=peers)), "unknown")
+
+    def test_counts_return_zero_for_online_peers_without_active_connections(self):
+        self.assertEqual(
+            classify_transport_counts(status_payload(peers={})),
+            {"direct": 0, "derp": 0, "peerRelay": 0, "unknown": 0, "active": 0},
+        )
+
 
 class TailscaleNormalizationTests(unittest.TestCase):
     def test_current_relay_and_latency_are_normalized_without_identity(self):
@@ -99,7 +122,20 @@ class TailscaleNormalizationTests(unittest.TestCase):
             checked_at=FIXED_NOW,
         )
 
-        self.assertEqual(payload["connection"], {"status": "online", "transport": "derp"})
+        self.assertEqual(
+            payload["connection"],
+            {
+                "status": "online",
+                "transport": "derp",
+                "peerCounts": {
+                    "direct": 0,
+                    "derp": 1,
+                    "peerRelay": 0,
+                    "unknown": 0,
+                    "active": 1,
+                },
+            },
+        )
         self.assertEqual(
             payload["derp"],
             {"id": 3, "code": "sin", "name": "Singapore", "latencyMs": 92.2},
@@ -133,7 +169,36 @@ class TailscaleNormalizationTests(unittest.TestCase):
         )
         self.assertEqual(payload["connection"]["status"], "offline")
         self.assertEqual(payload["connection"]["transport"], "unknown")
+        self.assertIsNone(payload["connection"]["peerCounts"])
         self.assertIsNone(payload["derp"])
+
+    def test_invalid_peer_counts_are_removed_by_snapshot_sanitization(self):
+        snapshot = normalize_tailscale_payload(
+            status_payload(peers={"private-peer": {"Active": True, "Relay": "sin"}}),
+            netcheck_payload(),
+            derp_map(),
+            checked_at=FIXED_NOW,
+        )
+        snapshot["connection"]["peerCounts"] = {
+            "active": 2,
+            "direct": 0,
+            "derp": 1,
+            "peerRelay": 0,
+            "unknown": 0,
+        }
+
+        sanitized = sanitize_snapshot(snapshot)
+
+        self.assertIsNotNone(sanitized)
+        self.assertIsNone(sanitized["connection"]["peerCounts"])
+
+        legacy_snapshot = dict(snapshot)
+        legacy_snapshot["connection"] = dict(snapshot["connection"])
+        legacy_snapshot["connection"].pop("peerCounts")
+        legacy = sanitize_snapshot(legacy_snapshot)
+
+        self.assertIsNotNone(legacy)
+        self.assertIsNone(legacy["connection"]["peerCounts"])
 
 
 class TailscaleCollectorTests(unittest.TestCase):
@@ -216,6 +281,10 @@ class TailscaleSnapshotServiceTests(unittest.TestCase):
 
         self.assertFalse(fresh["meta"]["stale"])
         self.assertEqual(fresh["meta"]["staleAfterSeconds"], 900)
+        self.assertEqual(
+            fresh["connection"]["peerCounts"],
+            {"direct": 0, "derp": 0, "peerRelay": 0, "unknown": 0, "active": 0},
+        )
         self.assertTrue(stale["meta"]["stale"])
         serialized = json.dumps(stale)
         self.assertNotIn("100.64.0.1", serialized)

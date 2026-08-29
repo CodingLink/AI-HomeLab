@@ -28,6 +28,7 @@ _TRANSPORT_MODES = {
     "idle",
     "unknown",
 }
+_PEER_COUNT_MODES = ("direct", "derp", "peerRelay", "unknown")
 
 
 class TailscaleUnavailable(RuntimeError):
@@ -80,37 +81,56 @@ def find_tailscale() -> Optional[str]:
     return None
 
 
-def classify_transport(status_payload: Any) -> str:
+def classify_transport_counts(status_payload: Any) -> Optional[Dict[str, int]]:
     if not isinstance(status_payload, Mapping):
-        return "unknown"
+        return None
     raw_peers = status_payload.get("Peer")
     if isinstance(raw_peers, Mapping):
         peers = raw_peers.values()
     elif isinstance(raw_peers, list):
         peers = raw_peers
     else:
-        return "unknown"
+        return None
 
-    modes = set()
-    active_count = 0
+    counts = {mode: 0 for mode in _PEER_COUNT_MODES}
     for peer in peers:
         if not isinstance(peer, Mapping) or peer.get("Active") is not True:
             continue
-        active_count += 1
         if isinstance(peer.get("CurAddr"), str) and peer["CurAddr"].strip():
-            modes.add("direct")
+            counts["direct"] += 1
         elif peer.get("PeerRelay"):
-            modes.add("peer_relay")
+            counts["peerRelay"] += 1
         elif peer.get("Relay"):
-            modes.add("derp")
+            counts["derp"] += 1
         else:
-            return "unknown"
+            counts["unknown"] += 1
+    counts["active"] = sum(counts.values())
+    return counts
 
+
+def classify_transport(status_payload: Any) -> str:
+    counts = classify_transport_counts(status_payload)
+    if counts is None:
+        return "unknown"
+
+    active_count = counts["active"]
     if active_count == 0:
         return "idle"
+    if counts["unknown"]:
+        return "unknown"
+
+    modes = {
+        mode
+        for mode in ("direct", "derp", "peerRelay")
+        if counts[mode]
+    }
     if len(modes) == 1:
-        return next(iter(modes))
-    return "mixed" if modes else "unknown"
+        return {
+            "direct": "direct",
+            "derp": "derp",
+            "peerRelay": "peer_relay",
+        }[next(iter(modes))]
+    return "mixed"
 
 
 def connection_status(status_payload: Any) -> str:
@@ -159,6 +179,11 @@ def normalize_tailscale_payload(
 ) -> Dict[str, Any]:
     checked = checked_at or utc_now()
     status = connection_status(status_payload)
+    peer_counts = (
+        classify_transport_counts(status_payload)
+        if status == "online"
+        else None
+    )
     transport = classify_transport(status_payload) if status == "online" else "unknown"
     derp: Optional[Dict[str, Any]] = None
 
@@ -203,7 +228,11 @@ def normalize_tailscale_payload(
         "refreshIntervalSeconds": REFRESH_INTERVAL_SECONDS,
         "staleAfterSeconds": STALE_AFTER_SECONDS,
         "status": "live",
-        "connection": {"status": status, "transport": transport},
+        "connection": {
+            "status": status,
+            "transport": transport,
+            "peerCounts": peer_counts,
+        },
         "derp": derp,
     }
 
@@ -235,6 +264,20 @@ def _sanitize_derp(value: Any) -> Optional[Dict[str, Any]]:
     }
 
 
+def _sanitize_peer_counts(value: Any) -> Optional[Dict[str, int]]:
+    if not isinstance(value, Mapping):
+        return None
+    counts: Dict[str, int] = {}
+    for key in ("active", *_PEER_COUNT_MODES):
+        raw_count = value.get(key)
+        if isinstance(raw_count, bool) or not isinstance(raw_count, int) or raw_count < 0:
+            return None
+        counts[key] = raw_count
+    if counts["active"] != sum(counts[mode] for mode in _PEER_COUNT_MODES):
+        return None
+    return counts
+
+
 def sanitize_snapshot(value: Any) -> Optional[Dict[str, Any]]:
     if not isinstance(value, Mapping) or value.get("schemaVersion") != SCHEMA_VERSION:
         return None
@@ -264,6 +307,7 @@ def sanitize_snapshot(value: Any) -> Optional[Dict[str, Any]]:
         "connection": {
             "status": safe_connection_status,
             "transport": transport,
+            "peerCounts": _sanitize_peer_counts(connection.get("peerCounts")),
         },
         "derp": _sanitize_derp(value.get("derp")),
     }
@@ -369,7 +413,11 @@ class TailscaleCollector:
                 "refreshIntervalSeconds": REFRESH_INTERVAL_SECONDS,
                 "staleAfterSeconds": STALE_AFTER_SECONDS,
                 "status": "unavailable",
-                "connection": {"status": "unavailable", "transport": "unknown"},
+                "connection": {
+                    "status": "unavailable",
+                    "transport": "unknown",
+                    "peerCounts": None,
+                },
                 "derp": None,
             }
 

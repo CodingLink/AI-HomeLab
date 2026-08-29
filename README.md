@@ -8,7 +8,7 @@
 
 **Home 页**
 
-- Tailscale 在线状态、活动连接路径、Home DERP 区域与往返延迟
+- Tailscale 在线状态、活动连接路径及各类型数量、Home DERP 区域与往返延迟
 - Clash Verge(Mihomo)当前 `PROXY` 组选中的节点名称与数据新鲜度
 - CodexBar Provider 额度(与 AI 页共享面板)
 
@@ -116,7 +116,7 @@ docker compose down
 设计的核心原则是**容器只接触脱敏后的数据**:
 
 - **快照脱敏后落盘**:采集器把脱敏结果原子写入快照目录;Docker 只读挂载该目录,不接触 CodexBar 凭据、Tailscale LocalAPI/socket 或任何 CLI 原始输出。
-- **Tailscale**:快照只保留在线状态、连接路径枚举、公开 DERP 区域、延迟与时间;不保存设备名、IP、用户、Peer 数量或节点标识。
+- **Tailscale**:快照只保留在线状态、连接路径枚举、各类型活动数量、公开 DERP 区域、延迟与时间;不保存设备名、IP、用户或节点标识。
 - **实时活动**:快照只包含应用、模型、调用状态、时间和估算性能值;不包含提示词、回复正文、文件路径、工具参数、会话标识或原始错误。超过 5 秒未更新时,API 自动清空进行中记录。
 - **Clash Verge**:采集只读取本机配置中的 Unix socket 路径和 secret,精确查询 `PROXY` 组,两者仅存在于采集进程内存;快照只保留当前选中节点名称、状态和时间,不保存候选节点、服务器地址、订阅或原始错误。HomeDash 不会启用 Clash Verge 的 TCP 控制端口,也不能切换节点。
 - **OpenRouter**:Management Key 固定存放在 macOS Keychain 的 `homedash.openrouter.management` 条目中;采集器只向 `https://openrouter.ai/api/v1/activity` 和 `/api/v1/credits` 发送 GET 请求;Key 不进入 Docker、环境变量、日志、快照或浏览器。快照只保留 credits 汇总及按模型聚合的公开用量字段,不保存 endpoint ID、API Key hash、workspace、用户或账户身份。Management Key 本身具有管理 API Key 的权限,建议为 HomeDash 单独创建并定期轮换。
@@ -130,7 +130,7 @@ docker compose down
 - 模型排行按总 Token 排序,占比也按总 Token 计算;名称优先使用 CC Switch `model_pricing.display_name`,缺失时回退到原始模型 ID。
 - Provider 额度不受日期和 Codex/Claude 筛选影响。
 - OpenRouter 视图范围固定为最近 30 个已结束的 UTC 日,模型按 credits 用量排序,不与本地排行混合。
-- Tailscale 活动连接路径是所有活动 Peer 的脱敏汇总;Home DERP 的存在不代表当前流量一定经过 DERP。
+- Tailscale 活动连接路径是所有活动 Peer 的脱敏汇总,并显示直连、DERP、Peer Relay 与未知类型的数量;Home DERP 的存在不代表当前流量一定经过 DERP。
 - TTFT、Time、TPS 和"调用中"状态只在对应应用的 CC Switch 路由模式启用时显示;"全部"筛选下任一应用启用即保留指标位置,缺失值显示 `—`。已完成请求优先使用 CC Switch 数据库精确值,进行中值标记为估算。
 
 ## API 一览

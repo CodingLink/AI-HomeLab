@@ -435,6 +435,13 @@ button {
   font-size: clamp(18px, 1.65vw, 22px);
 }
 
+.transport-count-value {
+  overflow: visible;
+  font-size: clamp(15px, 1.45vw, 20px);
+  line-height: 1.3;
+  white-space: normal;
+}
+
 .home-summary-grid {
   margin-bottom: 18px;
 }
@@ -1774,6 +1781,12 @@ button {
 
 .trend-legend-item.is-off {
   opacity: 0.4;
+}
+
+.trend-legend-item:focus-visible {
+  outline: 2px solid rgba(63, 130, 215, 0.42);
+  outline-offset: 2px;
+  border-radius: 4px;
 }
 
 .trend-legend-dot {
