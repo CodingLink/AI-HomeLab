@@ -16,12 +16,15 @@
 
 - 本地 / OpenRouter 双数据源切换,互不影响
 - CC Switch 用量汇总:请求数、主力模型、成功率、总 Token(含输入/输出拆分)
+- 费用汇总与趋势:按日期范围展示成本,趋势图可与 Token 曲线独立查看
 - 时间范围(今日 / 7 天 / 30 天)与应用(全部 / Codex / Claude)筛选
 - Token 用量趋势:输入、输出与缓存曲线,支持单独开关和悬浮查看
+- 最近一年 Token 使用热力图:按日查看 Token 用量,悬停显示请求数
 - CodexBar Provider 额度:按量付费显示余额,Coding plan 显示剩余额度进度条
 - 独立 7 天额度概览:显示最低剩余、窗口风险、重置时间和消耗预测
-- 最近活动:每次调用的 TTFT / Time / TPS,进行中的调用实时混入
-- 模型排行:本地按 Token 占比,OpenRouter 按 credits 占比
+- 模型调用状态:显示空闲或正在运行的模型
+- 最近活动:每次调用的 TTFT / Time / TPS、Token 与费用,进行中的调用实时混入
+- 模型排行:显示 Token、费用与占比;OpenRouter 按 credits 占比
 
 界面为卡片式布局,兼顾桌面与移动端;默认中文,可切换英文;动画遵循 `prefers-reduced-motion`。
 
@@ -141,6 +144,7 @@ docker compose down
 | --- | --- |
 | `GET /api/v1/health` | 健康检查与数据库可读性 |
 | `GET /api/v1/dashboard?range=&app=` | 仪表盘汇总;`range`: `today`/`7d`/`30d`,`app`: `all`/`codex`/`claude` |
+| `GET /api/v1/heatmap?app=` | 最近 365 天按日 Token 与请求数量 |
 | `GET /api/v1/providers` | CodexBar Provider 额度快照 |
 | `GET /api/v1/tailscale` | Tailscale 状态快照 |
 | `GET /api/v1/clash-verge` | Clash Verge 代理快照 |
@@ -154,7 +158,9 @@ docker compose down
 ```bash
 PYTHONPATH=. PYTHONPYCACHEPREFIX=/tmp/cc-dashboard-pycache python3 -m unittest discover -s tests -v
 node --test tests/weekly_quota_logic.test.js
+node --test tests/heatmap_logic.test.js
 node --check static/weekly-quota-logic.js
+node --check static/heatmap-logic.js
 node --check static/app.js
 ```
 

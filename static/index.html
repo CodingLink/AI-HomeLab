@@ -12,6 +12,7 @@
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="/styles.css" />
     <script src="/weekly-quota-logic.js" defer></script>
+    <script src="/heatmap-logic.js" defer></script>
     <script src="/app.js" defer></script>
   </head>
   <body>
@@ -168,6 +169,15 @@
         <div id="notice" class="notice" role="status" hidden></div>
 
         <section class="summary-grid" aria-label="Usage summary">
+          <article id="call-status-card" class="metric-card">
+            <p id="call-status-label" class="metric-label" data-i18n="modelCallStatus">模型调用状态</p>
+            <p id="call-status-value" class="metric-value call-status-value skeleton-text">
+              <span id="call-status-dot" class="status-dot" aria-hidden="true"></span>
+              <span id="call-status-text">—</span>
+            </p>
+            <p id="call-status-hint" class="metric-hint call-status-hint">—</p>
+          </article>
+
           <article class="metric-card">
             <p id="requests-label" class="metric-label" data-i18n="todayUsage">今日用量</p>
             <p id="requests-value" class="metric-value skeleton-text">—</p>
@@ -195,6 +205,12 @@
             </p>
             <p id="tokens-source-hint" class="metric-hint" hidden></p>
           </article>
+
+          <article id="cost-card" class="metric-card">
+            <p id="cost-label" class="metric-label" data-i18n="todayCost">今日成本</p>
+            <p id="cost-value" class="metric-value skeleton-text">—</p>
+            <p id="cost-hint" class="metric-hint">—</p>
+          </article>
         </section>
 
         <section id="trend-panel" class="panel trend-panel" aria-labelledby="trend-heading" hidden>
@@ -217,6 +233,10 @@
                 <span data-i18n="trendCache">缓存</span>
                 <span class="trend-legend-rate" id="trend-cache-rate"></span>
               </button>
+              <button type="button" class="trend-legend-item" data-series="cost" aria-pressed="true">
+                <span class="trend-legend-dot dot-cost" aria-hidden="true"></span>
+                <span data-i18n="trendCost">成本</span>
+              </button>
             </div>
           </div>
 
@@ -234,6 +254,10 @@
                 <linearGradient id="trend-fill-cache" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="0" stop-color="#3f82d7" stop-opacity="0.14" />
                   <stop offset="1" stop-color="#3f82d7" stop-opacity="0" />
+                </linearGradient>
+                <linearGradient id="trend-fill-cost" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0" stop-color="#df9229" stop-opacity="0.14" />
+                  <stop offset="1" stop-color="#df9229" stop-opacity="0" />
                 </linearGradient>
               </defs>
               <line class="trend-grid" x1="4" x2="596" y1="36" y2="36" />
@@ -258,6 +282,12 @@
                 <circle class="trend-end-dot" r="2" cx="-20" cy="-20" />
                 <circle class="trend-hover-dot" r="3" cx="-20" cy="-20" hidden />
               </g>
+              <g class="trend-series series-cost" data-series="cost">
+                <path class="trend-fill" d="" />
+                <path class="trend-line" d="" />
+                <circle class="trend-end-dot" r="2" cx="-20" cy="-20" />
+                <circle class="trend-hover-dot" r="3" cx="-20" cy="-20" hidden />
+              </g>
               <line id="trend-crosshair" class="trend-crosshair" x1="-20" x2="-20" y1="12" y2="108" hidden />
             </svg>
             <div id="trend-tooltip" class="trend-tooltip" hidden>
@@ -270,6 +300,43 @@
           <div class="trend-axis">
             <span id="trend-axis-start">—</span>
             <span id="trend-axis-end">—</span>
+          </div>
+        </section>
+
+        <section id="heatmap-panel" class="panel heatmap-panel" aria-labelledby="heatmap-heading" hidden>
+          <div class="panel-heading">
+            <div>
+              <p class="panel-kicker" data-i18n="heatmapKicker">ACTIVITY</p>
+              <h2 id="heatmap-heading" data-i18n="heatmapTitle">Token 使用热力图</h2>
+            </div>
+            <span id="heatmap-meta" class="panel-meta">—</span>
+          </div>
+
+          <div class="heatmap-body">
+            <div class="heatmap-scroll">
+              <div class="heatmap-inner">
+                <div id="heatmap-months" class="heatmap-months" aria-hidden="true"></div>
+                <div class="heatmap-grid-row">
+                  <div id="heatmap-weekdays" class="heatmap-weekdays" aria-hidden="true"></div>
+                  <div id="heatmap-grid" class="heatmap-grid" role="grid"></div>
+                </div>
+              </div>
+            </div>
+            <div id="heatmap-tooltip" class="trend-tooltip heatmap-tooltip" hidden>
+              <p class="trend-tooltip-title"></p>
+              <div class="trend-tooltip-rows"></div>
+            </div>
+            <div class="heatmap-footer">
+              <span data-i18n="heatmapLess">较少</span>
+              <span class="heatmap-legend" aria-hidden="true">
+                <span class="heatmap-cell" data-level="0"></span>
+                <span class="heatmap-cell" data-level="1"></span>
+                <span class="heatmap-cell" data-level="2"></span>
+                <span class="heatmap-cell" data-level="3"></span>
+                <span class="heatmap-cell" data-level="4"></span>
+              </span>
+              <span data-i18n="heatmapMore">较多</span>
+            </div>
           </div>
         </section>
 

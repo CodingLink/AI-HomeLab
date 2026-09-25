@@ -15,6 +15,7 @@ from urllib.parse import quote
 
 SUPPORTED_RANGES = {"today": 1, "7d": 7, "30d": 30}
 SUPPORTED_APPS = {"all", "codex", "claude"}
+HEATMAP_DAYS = 365
 REQUIRED_COLUMNS = {
     "app_type",
     "model",
@@ -532,6 +533,47 @@ class DashboardRepository:
             "routing": routing,
         }
 
+    def fetch_heatmap(self, app_filter: str) -> Dict[str, Any]:
+        schema = self.validate_schema()
+        now = self.now_provider()
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=timezone(timedelta(hours=8)))
+        local_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        start = local_midnight - timedelta(days=HEATMAP_DAYS - 1)
+        apps = self._app_values(app_filter)
+        rows = self._load_rows(int(start.timestamp()), int(now.timestamp()), apps)
+        buckets = self._empty_trend(start, now, "day")
+
+        data_through: Optional[datetime] = None
+        for row in rows:
+            created = datetime.fromtimestamp(
+                _safe_int(row["created_at"]), tz=now.tzinfo
+            )
+            bucket_key = _iso(created.replace(hour=0, minute=0, second=0, microsecond=0))
+            if bucket_key in buckets:
+                self._add_row(buckets[bucket_key], row)
+            if data_through is None or created > data_through:
+                data_through = created
+
+        days = [
+            {
+                "date": bucket[:10],
+                "totalTokens": metrics["totalTokens"],
+                "requests": metrics["requests"],
+            }
+            for bucket, metrics in buckets.items()
+        ]
+        return {
+            "meta": {
+                "app": app_filter,
+                "generatedAt": _iso(now),
+                "dataThrough": _iso(data_through) if data_through else None,
+                "schemaVersion": schema["schemaVersion"],
+                "stale": False,
+            },
+            "days": days,
+        }
+
 
 class DashboardService:
     def __init__(self, repository: DashboardRepository, refresh_seconds: float = 8.0) -> None:
@@ -539,6 +581,7 @@ class DashboardService:
         self.refresh_seconds = max(1.0, refresh_seconds)
         self._lock = threading.Lock()
         self._cache: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        self._heatmap_cache: Dict[str, Dict[str, Any]] = {}
 
     def get_dashboard(self, range_key: str, app_filter: str) -> Dict[str, Any]:
         if range_key not in SUPPORTED_RANGES or app_filter not in SUPPORTED_APPS:
@@ -571,6 +614,42 @@ class DashboardService:
                 return stale
 
             self._cache[key] = {
+                "signature": signature,
+                "cachedAt": monotonic_now,
+                "payload": payload,
+            }
+            return copy.deepcopy(payload)
+
+    def get_heatmap(self, app_filter: str) -> Dict[str, Any]:
+        if app_filter not in SUPPORTED_APPS:
+            raise ValueError("Unsupported dashboard filter")
+
+        monotonic_now = time.monotonic()
+        try:
+            signature = self.repository.database_signature()
+        except DashboardError:
+            signature = None
+
+        with self._lock:
+            cached = self._heatmap_cache.get(app_filter)
+            if (
+                cached
+                and signature == cached["signature"]
+                and monotonic_now - cached["cachedAt"] < self.refresh_seconds
+            ):
+                return copy.deepcopy(cached["payload"])
+
+            try:
+                payload = self.repository.fetch_heatmap(app_filter)
+            except DashboardError:
+                if not cached:
+                    raise
+                stale = copy.deepcopy(cached["payload"])
+                stale["meta"]["stale"] = True
+                stale["meta"]["staleReason"] = "database_temporarily_unavailable"
+                return stale
+
+            self._heatmap_cache[app_filter] = {
                 "signature": signature,
                 "cachedAt": monotonic_now,
                 "payload": payload,

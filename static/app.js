@@ -56,17 +56,37 @@ const translations = {
     sevenDayUsage: "7 天用量",
     thirtyDayUsage: "30 天用量",
     requests: "次请求",
+    rankingRequests: "{count} 次请求",
+    modelCallStatus: "模型调用状态",
+    callStatusIdle: "空闲",
+    callStatusActiveCount: "{count} 个调用中",
+    liveStatusUnavailable: "实时状态不可用",
     primaryModel: "主要模型",
     byTokenVolume: "按 Token 用量",
     successRate: "成功率",
     successfulRequests: "{success} / {total} 次成功",
     totalTokens: "总 Token",
+    todayCost: "今日成本",
+    sevenDayCost: "7 天成本",
+    thirtyDayCost: "30 天成本",
+    costPerRequest: "每请求 {value}",
+    dailyAverageCost: "日均 {value}",
     trendKicker: "TREND",
     trendTitle: "Token 用量趋势",
     trendInput: "输入",
     trendOutput: "输出",
     trendCache: "缓存",
+    trendCost: "成本",
     trendCacheRate: "缓存率 {value}%",
+    heatmapKicker: "ACTIVITY",
+    heatmapTitle: "Token 使用热力图",
+    heatmapTotal: "最近一年共 {tokens} Token",
+    heatmapRequests: "请求",
+    heatmapLess: "较少",
+    heatmapMore: "较多",
+    heatmapTooltipTokens: "{date}：{tokens} Token，{requests} 次请求",
+    heatmapUnavailable: "热力图数据暂不可用",
+    heatmapAriaLabel: "最近一年每日 Token 用量热力图",
     providerQuotas: "Provider 额度",
     remainingCapacity: "剩余额度",
     providerWaiting: "正在等待 CodexBar",
@@ -230,17 +250,37 @@ const translations = {
     sevenDayUsage: "7-Day Usage",
     thirtyDayUsage: "30-Day Usage",
     requests: "requests",
+    rankingRequests: "{count} requests",
+    modelCallStatus: "Model Call Status",
+    callStatusIdle: "Idle",
+    callStatusActiveCount: "{count} calling",
+    liveStatusUnavailable: "Live status unavailable",
     primaryModel: "Primary Model",
     byTokenVolume: "By token volume",
     successRate: "Success Rate",
     successfulRequests: "{success} / {total} successful",
     totalTokens: "Total Tokens",
+    todayCost: "Today Cost",
+    sevenDayCost: "7-Day Cost",
+    thirtyDayCost: "30-Day Cost",
+    costPerRequest: "{value} per request",
+    dailyAverageCost: "Daily avg {value}",
     trendKicker: "TREND",
     trendTitle: "Token Usage Trend",
     trendInput: "Input",
     trendOutput: "Output",
     trendCache: "Cache",
+    trendCost: "Cost",
     trendCacheRate: "Cache rate {value}%",
+    heatmapKicker: "ACTIVITY",
+    heatmapTitle: "Token Usage Heatmap",
+    heatmapTotal: "{tokens} tokens in the last year",
+    heatmapRequests: "Requests",
+    heatmapLess: "Less",
+    heatmapMore: "More",
+    heatmapTooltipTokens: "{tokens} tokens, {requests} requests on {date}",
+    heatmapUnavailable: "Heatmap data is temporarily unavailable",
+    heatmapAriaLabel: "Daily token usage heatmap for the last year",
     providerQuotas: "Provider Quotas",
     remainingCapacity: "Remaining Capacity",
     providerWaiting: "Waiting for CodexBar",
@@ -359,6 +399,10 @@ const state = {
   fetching: false,
   dashboardRequestKey: null,
   dashboardReloadPending: false,
+  heatmapPayload: null,
+  heatmapFetching: false,
+  heatmapRequestKey: null,
+  heatmapReloadPending: false,
   providerPayload: null,
   providerFetching: false,
   providerFailed: false,
@@ -412,6 +456,16 @@ const elements = {
   tokensSourceHint: document.querySelector("#tokens-source-hint"),
   tokenInValue: document.querySelector("#token-in-value"),
   tokenOutValue: document.querySelector("#token-out-value"),
+  aiSummaryGrid: document.querySelector("#ai-view .summary-grid"),
+  costCard: document.querySelector("#cost-card"),
+  costLabel: document.querySelector("#cost-label"),
+  costValue: document.querySelector("#cost-value"),
+  costHint: document.querySelector("#cost-hint"),
+  callStatusCard: document.querySelector("#call-status-card"),
+  callStatusValue: document.querySelector("#call-status-value"),
+  callStatusDot: document.querySelector("#call-status-dot"),
+  callStatusText: document.querySelector("#call-status-text"),
+  callStatusHint: document.querySelector("#call-status-hint"),
   trendPanel: document.querySelector("#trend-panel"),
   trendLegend: document.querySelector(".trend-legend"),
   trendSvg: document.querySelector("#trend-svg"),
@@ -420,6 +474,15 @@ const elements = {
   trendTooltip: document.querySelector("#trend-tooltip"),
   trendCacheRate: document.querySelector("#trend-cache-rate"),
   trendCrosshair: document.querySelector("#trend-crosshair"),
+  heatmapPanel: document.querySelector("#heatmap-panel"),
+  heatmapMeta: document.querySelector("#heatmap-meta"),
+  heatmapScroll: document.querySelector(".heatmap-scroll"),
+  heatmapBody: document.querySelector(".heatmap-body"),
+  heatmapInner: document.querySelector(".heatmap-inner"),
+  heatmapMonths: document.querySelector("#heatmap-months"),
+  heatmapWeekdays: document.querySelector("#heatmap-weekdays"),
+  heatmapGrid: document.querySelector("#heatmap-grid"),
+  heatmapTooltip: document.querySelector("#heatmap-tooltip"),
   weeklyQuota: document.querySelector("#weekly-quota"),
   weeklyQuotaBar: document.querySelector("#weekly-quota-bar"),
   weeklyQuotaValue: document.querySelector("#weekly-quota-value"),
@@ -872,6 +935,18 @@ function rangeLabelKey() {
   return "todayUsage";
 }
 
+function costRangeLabelKey() {
+  if (state.range === "7d") return "sevenDayCost";
+  if (state.range === "30d") return "thirtyDayCost";
+  return "todayCost";
+}
+
+function costRangeDays() {
+  if (state.range === "7d") return 7;
+  if (state.range === "30d") return 30;
+  return 1;
+}
+
 function setConnection(status) {
   elements.connectionDot.className = `connection-dot ${status}`;
   const label = status === "live" ? "live" : status === "stale" ? "delayed" : status === "offline" ? "disconnected" : "connecting";
@@ -1100,6 +1175,7 @@ function renderSummary(payload, previousPayload = null) {
   elements.modelHint.textContent = t("byTokenVolume");
   elements.successLabel.textContent = t("successRate");
   elements.tokensLabel.textContent = t("totalTokens");
+  elements.costLabel.textContent = t(costRangeLabelKey());
   elements.tokensHint.hidden = false;
   elements.tokensSourceHint.hidden = true;
   animateNumber(
@@ -1146,7 +1222,84 @@ function renderSummary(payload, previousPayload = null) {
     formatInteger,
   );
 
-  [elements.requestsValue, elements.modelValue, elements.successValue, elements.tokensValue].forEach(removeSkeleton);
+  animateNumber(
+    elements.costValue,
+    previous?.totalCostUsd,
+    summary.totalCostUsd,
+    formatCost,
+    formatCost,
+  );
+  const totalCostUsd = Number(summary.totalCostUsd) || 0;
+  const rangeDays = costRangeDays();
+  if (rangeDays === 1) {
+    const perRequest =
+      summary.requests > 0 ? totalCostUsd / summary.requests : 0;
+    elements.costHint.textContent = t("costPerRequest", {
+      value: formatCost(perRequest),
+    });
+  } else {
+    elements.costHint.textContent = t("dailyAverageCost", {
+      value: formatCost(totalCostUsd / rangeDays),
+    });
+  }
+
+  [elements.requestsValue, elements.modelValue, elements.successValue, elements.tokensValue, elements.costValue].forEach(removeSkeleton);
+  renderCallStatus();
+}
+
+function renderCallStatus() {
+  const dot = elements.callStatusDot;
+  const text = elements.callStatusText;
+  const hint = elements.callStatusHint;
+  removeSkeleton(elements.callStatusValue);
+
+  const liveAvailable =
+    state.source === "local" &&
+    routingMetricsVisible() &&
+    state.livePayload !== null;
+  if (!liveAvailable) {
+    dot.hidden = true;
+    text.textContent = "—";
+    hint.textContent = t("liveStatusUnavailable");
+    hint.title = "";
+    return;
+  }
+
+  const acts = (state.livePayload.activities || []).filter(
+    (item) =>
+      item.state === "calling" &&
+      (state.app === "all" || item.app === state.app),
+  );
+  dot.hidden = false;
+  if (!acts.length) {
+    dot.className = "status-dot neutral";
+    dot.setAttribute("aria-label", t("callStatusIdle"));
+    text.textContent = t("callStatusIdle");
+    hint.textContent = "—";
+    hint.title = "";
+    return;
+  }
+
+  dot.className = "status-dot calling";
+  const names = [...new Set(acts.map((item) => localModelDisplayName(item)))];
+  const separator = locale() === "zh-CN" ? "、" : ", ";
+  if (acts.length === 1) {
+    dot.setAttribute("aria-label", t("calling"));
+    text.textContent = t("calling");
+    const elapsed = formatSeconds(Date.now() - Date.parse(acts[0].startedAt));
+    hint.textContent =
+      elapsed === "—" ? names[0] : `${names[0]} · ${elapsed}`;
+    hint.title = acts[0].model || "";
+    return;
+  }
+
+  const label = t("callStatusActiveCount", { count: formatInteger(acts.length) });
+  dot.setAttribute("aria-label", label);
+  text.textContent = label;
+  hint.textContent = names.join(separator);
+  hint.title = acts
+    .map((item) => localModelDisplayName(item))
+    .join(separator);
 }
 
 const trendChartWidth = 600;
@@ -1154,7 +1307,7 @@ const trendChartHeight = 120;
 const trendChartPadX = 4;
 const trendChartPadY = 12;
 let trendRenderedSignature = null;
-const trendSeriesVisible = { input: true, output: true, cache: true };
+const trendSeriesVisible = { input: true, output: true, cache: true, cost: true };
 let trendContext = null;
 
 const trendSeriesReaders = {
@@ -1165,13 +1318,25 @@ const trendSeriesReaders = {
       0,
       (Number(bucket.cacheReadTokens) || 0) + (Number(bucket.cacheCreationTokens) || 0),
     ),
+  cost: (bucket) => Math.max(0, Number(bucket.totalCostUsd) || 0),
 };
 
 const trendSeriesLabelKeys = {
   input: "trendInput",
   output: "trendOutput",
   cache: "trendCache",
+  cost: "trendCost",
 };
+
+const trendSeriesFormatters = {
+  cost: formatCost,
+};
+
+// Token series share one scale; cost normalizes to its own max so a
+// single-digit dollar curve stays visible next to million-scale tokens.
+function trendScaleGroup(key) {
+  return key === "cost" ? "cost" : "token";
+}
 
 function smoothTrendPath(points) {
   if (points.length < 2) return "";
@@ -1246,7 +1411,9 @@ function showTrendHover(index) {
         label.textContent = t(trendSeriesLabelKeys[key]);
         const value = document.createElement("span");
         value.className = "trend-tooltip-value";
-        value.textContent = formatCompact(read(bucket));
+        value.textContent = (trendSeriesFormatters[key] || formatCompact)(
+          read(bucket),
+        );
         row.append(dot, label, value);
         return row;
       }),
@@ -1297,22 +1464,24 @@ function renderTrend(payload) {
       trend.map((bucket) => read(bucket)),
     ]),
   );
-  const visibleMax = Math.max(
-    0,
-    ...Object.entries(seriesValues).flatMap(([key, values]) =>
-      trendSeriesVisible[key] ? values : [],
-    ),
-  );
+  const scaleMax = { token: 0, cost: 0 };
+  for (const [key, values] of Object.entries(seriesValues)) {
+    if (!trendSeriesVisible[key]) continue;
+    const group = trendScaleGroup(key);
+    for (const value of values) {
+      if (value > scaleMax[group]) scaleMax[group] = value;
+    }
+  }
 
   const innerWidth = trendChartWidth - trendChartPadX * 2;
   const innerHeight = trendChartHeight - trendChartPadY * 2;
   const stepX = innerWidth / (trend.length - 1);
   const baseline = trendChartHeight - trendChartPadY;
-  const toPoint = (value, index) => {
+  const toPoint = (max) => (value, index) => {
     const x = trendChartPadX + stepX * index;
     const y =
-      visibleMax > 0
-        ? trendChartPadY + innerHeight * (1 - value / visibleMax)
+      max > 0
+        ? trendChartPadY + innerHeight * (1 - value / max)
         : baseline;
     return [Number(x.toFixed(2)), Number(y.toFixed(2))];
   };
@@ -1324,7 +1493,7 @@ function renderTrend(payload) {
     const fill = group.querySelector(".trend-fill");
     const endDot = group.querySelector(".trend-end-dot");
     if (!line || !fill || !endDot) return;
-    const points = seriesValues[key].map(toPoint);
+    const points = seriesValues[key].map(toPoint(scaleMax[trendScaleGroup(key)]));
     pointsBySeries[key] = points;
     const seriesVisibleNow = trendSeriesVisible[key] === true;
     group.classList.toggle("is-muted", !seriesVisibleNow);
@@ -1366,6 +1535,181 @@ function renderTrend(payload) {
       { duration: contentFadeDuration + 200, easing: listEasing },
     );
   }
+}
+
+let heatmapRenderedSignature = null;
+let heatmapScrollPinnedToEnd = true;
+
+function formatHeatmapDate(dateStr) {
+  const parsed = window.HomeDashHeatmap?.parseDay(dateStr);
+  if (!parsed) return dateStr || "—";
+  return new Intl.DateTimeFormat(locale(), {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  }).format(new Date(parsed.year, parsed.month - 1, parsed.day));
+}
+
+function hideHeatmapHover() {
+  elements.heatmapTooltip.hidden = true;
+}
+
+function showHeatmapHover(cell) {
+  const tokens = Number(cell.dataset.tokens) || 0;
+  const requests = Number(cell.dataset.requests) || 0;
+  const tooltip = elements.heatmapTooltip;
+
+  tooltip.querySelector(".trend-tooltip-title").textContent = formatHeatmapDate(
+    cell.dataset.date,
+  );
+  const rows = tooltip.querySelector(".trend-tooltip-rows");
+  const tokenRow = document.createElement("p");
+  tokenRow.className = "trend-tooltip-row";
+  const tokenDot = document.createElement("span");
+  tokenDot.className = "trend-legend-dot dot-cache";
+  tokenDot.setAttribute("aria-hidden", "true");
+  const tokenLabel = document.createElement("span");
+  tokenLabel.textContent = t("totalTokens");
+  const tokenValue = document.createElement("span");
+  tokenValue.className = "trend-tooltip-value";
+  tokenValue.textContent = formatCompact(tokens);
+  tokenRow.append(tokenDot, tokenLabel, tokenValue);
+  const requestRow = document.createElement("p");
+  requestRow.className = "trend-tooltip-row";
+  const requestLabel = document.createElement("span");
+  requestLabel.textContent = t("heatmapRequests");
+  const requestValue = document.createElement("span");
+  requestValue.className = "trend-tooltip-value";
+  requestValue.textContent = formatInteger(requests);
+  requestRow.append(requestLabel, requestValue);
+  rows.replaceChildren(tokenRow, requestRow);
+
+  const bodyBox = elements.heatmapBody.getBoundingClientRect();
+  const panelBox = elements.heatmapPanel.getBoundingClientRect();
+  const cellBox = cell.getBoundingClientRect();
+  const px = cellBox.left - bodyBox.left + cellBox.width / 2;
+  tooltip.hidden = false;
+  const half = tooltip.offsetWidth / 2;
+  tooltip.classList.toggle("is-left", px > bodyBox.width - half - 4);
+  tooltip.classList.toggle("is-right", px < half + 4);
+  tooltip.style.left = `${px}px`;
+  // Prefer above the cell (GitHub-style); it may overlay the panel heading.
+  // Fall below only when the panel's top edge would clip it.
+  const cellY = cellBox.top - bodyBox.top;
+  const fitsAbove = cellBox.top - tooltip.offsetHeight - 6 >= panelBox.top;
+  tooltip.style.top = fitsAbove
+    ? `${cellY - tooltip.offsetHeight - 6}px`
+    : `${cellY + cellBox.height + 6}px`;
+}
+
+function renderHeatmapWeekdays() {
+  const formatter = new Intl.DateTimeFormat(locale(), { weekday: "short" });
+  const labels = [];
+  for (let day = 0; day < 7; day += 1) {
+    const label = document.createElement("span");
+    if (day % 2 === 1) {
+      // 2026-01-04 is a Sunday, so rows 1/3/5 read Mon/Wed/Fri, like GitHub.
+      label.textContent = formatter.format(new Date(2026, 0, 4 + day));
+    }
+    labels.push(label);
+  }
+  elements.heatmapWeekdays.replaceChildren(...labels);
+}
+
+let heatmapWeekCount = 0;
+
+function syncHeatmapCellSize() {
+  // Explicit pixel tracks: fr-sized implicit columns can oscillate against the
+  // scroll container's scrollbar and overflow the grid box by the scrollbar's
+  // width, so the column width is computed from the grid's actual width.
+  const width = elements.heatmapGrid.clientWidth;
+  if (!width || !heatmapWeekCount) return;
+  const gridGap = 4; // Matches .heatmap-grid gap in styles.css.
+  const cellSize = (width - (heatmapWeekCount - 1) * gridGap) / heatmapWeekCount;
+  elements.heatmapGrid.style.gridAutoColumns = `${cellSize}px`;
+  elements.heatmapWeekdays.style.gridTemplateRows = `repeat(7, ${cellSize}px)`;
+}
+
+function renderHeatmap(payload) {
+  const logic = window.HomeDashHeatmap;
+  const days = payload?.days;
+  if (!logic || !Array.isArray(days) || !days.length) {
+    elements.heatmapPanel.hidden = true;
+    heatmapRenderedSignature = null;
+    hideHeatmapHover();
+    return;
+  }
+
+  const values = days.map((day) => Number(day.totalTokens) || 0);
+  const totalTokens = values.reduce((sum, value) => sum + value, 0);
+  const totalRequests = days.reduce(
+    (sum, day) => sum + (Number(day.requests) || 0),
+    0,
+  );
+  const signature = `${state.language}:${state.app}:${totalTokens}:${totalRequests}:${days.length}:${days[0].date}:${days[days.length - 1].date}`;
+
+  const wasHidden = elements.heatmapPanel.hidden;
+  elements.heatmapPanel.hidden = false;
+  elements.heatmapMeta.textContent = t("heatmapTotal", {
+    tokens: formatCompact(totalTokens),
+  });
+  if (!wasHidden && signature === heatmapRenderedSignature) return;
+  heatmapRenderedSignature = signature;
+
+  const calendar = logic.buildCalendar(days);
+  const thresholds = logic.computeThresholds(values);
+  elements.heatmapGrid.replaceChildren(
+    ...calendar.cells.map((entry) => {
+      const cell = document.createElement("span");
+      cell.className = "heatmap-cell";
+      if (!entry) {
+        cell.classList.add("is-blank");
+        return cell;
+      }
+      cell.dataset.date = entry.date;
+      cell.dataset.tokens = String(entry.totalTokens);
+      cell.dataset.requests = String(entry.requests);
+      cell.dataset.level = String(logic.levelFor(entry.totalTokens, thresholds));
+      cell.setAttribute("role", "gridcell");
+      cell.setAttribute(
+        "aria-label",
+        t("heatmapTooltipTokens", {
+          date: formatHeatmapDate(entry.date),
+          tokens: formatCompact(entry.totalTokens),
+          requests: formatInteger(entry.requests),
+        }),
+      );
+      return cell;
+    }),
+  );
+
+  const monthFormatter = new Intl.DateTimeFormat(locale(), { month: "short" });
+  const gridGap = 4; // Matches .heatmap-grid gap in styles.css.
+  const columnPitch =
+    `(100% - ${(calendar.weekCount - 1) * gridGap}px) / ${calendar.weekCount} + ${gridGap}px`;
+  elements.heatmapMonths.replaceChildren(
+    ...calendar.monthLabels.map((label) => {
+      const month = document.createElement("span");
+      month.textContent = monthFormatter.format(
+        new Date(label.year, label.month - 1, 1),
+      );
+      month.style.left = `calc(${label.weekIndex} * (${columnPitch}))`;
+      return month;
+    }),
+  );
+  renderHeatmapWeekdays();
+  heatmapWeekCount = calendar.weekCount;
+  syncHeatmapCellSize();
+
+  elements.heatmapScroll.scrollLeft = elements.heatmapScroll.scrollWidth;
+  playRowAnimation(
+    elements.heatmapInner,
+    [
+      { opacity: 0, transform: "translate3d(0, 6px, 0)" },
+      { opacity: 1, transform: "translate3d(0, 0, 0)" },
+    ],
+    { duration: contentFadeDuration + 200, easing: listEasing },
+  );
 }
 
 function activityKey(item) {
@@ -1778,7 +2122,8 @@ function createRankingNode() {
     <div class="ranking-labels">
       <span class="ranking-name"></span>
       <span class="ranking-values">
-        <span class="ranking-request-value"></span>
+        <span class="ranking-token-value"></span>
+        <span class="ranking-cost-value"></span>
         <span class="share ranking-share-value"></span>
       </span>
     </div>
@@ -1793,6 +2138,9 @@ function updateRankingNode(node, item) {
   const nameElement = node.querySelector(".ranking-name");
   nameElement.textContent = name;
   nameElement.title = localModelTitle(item, name);
+  node.querySelector(".ranking-values").title = t("rankingRequests", {
+    count: formatInteger(item.requests),
+  });
 
   const progress = node.querySelector(".ranking-track");
   progress.max = 100;
@@ -1834,6 +2182,7 @@ function renderRanking(payload, previousPayload = null, animateEntries = false) 
         previous &&
           (previous.requests !== item.requests ||
             previous.totalTokens !== item.totalTokens ||
+            previous.totalCostUsd !== item.totalCostUsd ||
             previous.percentage !== item.percentage),
       );
     },
@@ -1842,10 +2191,18 @@ function renderRanking(payload, previousPayload = null, animateEntries = false) 
   entries.forEach(({ item, node }) => {
     const previous = previousModels.get(item.model);
     animateNumber(
-      node.querySelector(".ranking-request-value"),
-      previous?.requests,
-      item.requests,
+      node.querySelector(".ranking-token-value"),
+      previous?.totalTokens,
+      item.totalTokens,
+      formatCompact,
       formatInteger,
+    );
+    animateNumber(
+      node.querySelector(".ranking-cost-value"),
+      previous?.totalCostUsd,
+      item.totalCostUsd,
+      formatCost,
+      formatCost,
     );
     animateNumber(
       node.querySelector(".ranking-share-value"),
@@ -2773,8 +3130,19 @@ function renderOpenRouterRanking(payload, previousPayload = null, animateChanges
   });
   entries.forEach(({ item: model, node }) => {
     const previous = previousModels.get(model.id);
+    const totalTokens = (entry) =>
+      (Number(entry?.promptTokens) || 0) +
+      (Number(entry?.completionTokens) || 0) +
+      (Number(entry?.reasoningTokens) || 0);
     animateNumber(
-      node.querySelector(".ranking-request-value"),
+      node.querySelector(".ranking-token-value"),
+      previous && totalTokens(previous),
+      totalTokens(model),
+      formatCompact,
+      formatInteger,
+    );
+    animateNumber(
+      node.querySelector(".ranking-cost-value"),
       previous?.usageCredits,
       model.usageCredits,
       formatCredits,
@@ -2847,6 +3215,9 @@ function configureAISource() {
   elements.localFilters.hidden = !isLocal;
   elements.openrouterPeriod.hidden = isLocal;
   elements.aiProviderSlot.hidden = !isLocal;
+  elements.costCard.hidden = !isLocal;
+  elements.callStatusCard.hidden = !isLocal;
+  elements.aiSummaryGrid.classList.toggle("is-openrouter", !isLocal);
   elements.activityHeading.textContent = isLocal ? t("requestStream") : t("openrouterActivity");
   elements.rankingKicker.textContent = t("modelRankings");
   elements.rankingHeading.textContent = isLocal ? t("tokenShare") : t("creditsShare");
@@ -2899,6 +3270,7 @@ function renderAI(previousPayload = null, animateChanges = false, renderProvider
 
   if (state.source === "openrouter") {
     elements.trendPanel.hidden = true;
+    elements.heatmapPanel.hidden = true;
     if (state.openrouterFailed) {
       renderOpenRouterFailure();
     } else if (state.openrouterPayload) {
@@ -2910,6 +3282,7 @@ function renderAI(previousPayload = null, animateChanges = false, renderProvider
     return;
   }
 
+  renderHeatmap(state.heatmapPayload);
   if (!state.payload) return;
   renderSummary(state.payload, previousPayload);
   renderTrend(state.payload);
@@ -3077,6 +3450,7 @@ function renderShell({ transition = false } = {}) {
   elements.languageToggle.title = languageLabel;
   elements.pageLoader.setAttribute("aria-label", t("loadingPage"));
   elements.trendSvg.setAttribute("aria-label", t("trendAriaLabel"));
+  elements.heatmapGrid.setAttribute("aria-label", t("heatmapAriaLabel"));
 
   const isHome = state.view === "home";
   const previousView = state.renderedView;
@@ -3186,6 +3560,51 @@ async function loadDashboard({ silent = false } = {}) {
     if (state.dashboardReloadPending) {
       state.dashboardReloadPending = false;
       loadDashboard();
+    }
+  }
+}
+
+async function loadHeatmap() {
+  const requestedApp = state.app;
+  if (state.heatmapFetching) {
+    if (state.heatmapRequestKey !== requestedApp) {
+      state.heatmapReloadPending = true;
+    }
+    return;
+  }
+  state.heatmapFetching = true;
+  state.heatmapRequestKey = requestedApp;
+
+  try {
+    const params = new URLSearchParams({ app: requestedApp });
+    const response = await fetch(`/api/v1/heatmap?${params}`, {
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+    });
+    if (!response.ok) throw new Error("Heatmap request failed");
+    const nextPayload = await response.json();
+    if (requestedApp !== state.app) {
+      state.heatmapReloadPending = true;
+      return;
+    }
+    state.heatmapPayload = nextPayload;
+    if (state.view === "ai" && state.source === "local") {
+      renderHeatmap(state.heatmapPayload);
+    }
+  } catch (_error) {
+    if (
+      state.view === "ai" &&
+      state.source === "local" &&
+      requestedApp === state.app
+    ) {
+      elements.heatmapMeta.textContent = t("heatmapUnavailable");
+    }
+  } finally {
+    state.heatmapFetching = false;
+    state.heatmapRequestKey = null;
+    if (state.heatmapReloadPending) {
+      state.heatmapReloadPending = false;
+      loadHeatmap();
     }
   }
 }
@@ -3306,6 +3725,7 @@ function applyLiveActivity(payload) {
   state.livePayload = payload?.meta?.stale ? null : payload;
   if (state.view === "ai" && state.source === "local" && state.payload) {
     renderActivity(state.payload, state.payload, true);
+    renderCallStatus();
   }
 }
 
@@ -3376,7 +3796,7 @@ elements.sourceFilter.addEventListener("click", (event) => {
   renderAI(null, false, false);
   fadeAiContent();
   if (state.source === "local") {
-    runPageLoad([() => loadDashboard(), () => loadLiveActivity()]);
+    runPageLoad([() => loadDashboard(), () => loadHeatmap(), () => loadLiveActivity()]);
   } else {
     runPageLoad([() => loadOpenRouter()]);
   }
@@ -3424,8 +3844,24 @@ elements.appFilter.addEventListener("click", (event) => {
   state.app = button.dataset.app;
   renderAI(state.payload, false, false);
   fadeAiContent();
-  runPageLoad([() => loadDashboard()]);
+  runPageLoad([() => loadDashboard(), () => loadHeatmap()]);
 });
+
+elements.heatmapGrid.addEventListener("pointerover", (event) => {
+  const cell = event.target.closest(".heatmap-cell[data-date]");
+  if (!cell || !elements.heatmapGrid.contains(cell)) return;
+  showHeatmapHover(cell);
+});
+
+elements.heatmapGrid.addEventListener("pointerleave", hideHeatmapHover);
+
+elements.heatmapScroll.addEventListener("scroll", () => {
+  hideHeatmapHover();
+  const { scrollLeft, scrollWidth, clientWidth } = elements.heatmapScroll;
+  heatmapScrollPinnedToEnd = scrollLeft + clientWidth >= scrollWidth - 2;
+});
+
+new ResizeObserver(syncHeatmapCellSize).observe(elements.heatmapGrid);
 
 elements.languageToggle.addEventListener("click", () => {
   state.language = state.language === "zh" ? "en" : "zh";
@@ -3446,6 +3882,7 @@ window.addEventListener("hashchange", () => {
   } else {
     runPageLoad([
       () => loadDashboard(),
+      () => loadHeatmap(),
       () => loadProviders(),
       () => loadOpenRouter(),
     ]);
@@ -3453,7 +3890,12 @@ window.addEventListener("hashchange", () => {
   manageLiveActivityStream();
 });
 
-window.addEventListener("resize", () => updateNavIndicator(false));
+window.addEventListener("resize", () => {
+  updateNavIndicator(false);
+  if (heatmapScrollPinnedToEnd) {
+    elements.heatmapScroll.scrollLeft = elements.heatmapScroll.scrollWidth;
+  }
+});
 document.fonts?.ready.then(() => updateNavIndicator(false));
 
 renderShell();
@@ -3467,6 +3909,7 @@ if (state.view === "home") {
 } else {
   runPageLoad([
     () => loadDashboard(),
+    () => loadHeatmap(),
     () => loadProviders(),
     () => loadOpenRouter(),
   ]);

@@ -132,6 +132,20 @@ class DashboardRepositoryTests(unittest.TestCase):
         self.assertEqual(unrouted["inputTokens"], 70)
         self.assertEqual(unrouted["totalTokens"], 120)
 
+    def test_trend_buckets_carry_cost(self):
+        payload = self.repository.fetch_dashboard("today", "all")
+        trend = payload["trend"]
+
+        self.assertTrue(all("totalCostUsd" in bucket for bucket in trend))
+        hourly_costs = sorted(
+            bucket["totalCostUsd"] for bucket in trend if bucket["totalCostUsd"] > 0
+        )
+        self.assertEqual(hourly_costs, [0.01, 0.02])
+        self.assertAlmostEqual(
+            sum(bucket["totalCostUsd"] for bucket in trend),
+            payload["summary"]["totalCostUsd"],
+        )
+
     def test_input_token_semantics_match_cc_switch_normalization(self):
         connection = sqlite3.connect(str(self.database_path))
         rows = [
@@ -258,6 +272,128 @@ class DashboardRepositoryTests(unittest.TestCase):
         self.assertIsNone(payload["summary"]["primaryModelDisplayName"])
         self.assertEqual(payload["recent"], [])
         self.assertEqual(payload["models"], [])
+
+    def test_heatmap_returns_365_ascending_days(self):
+        payload = self.repository.fetch_heatmap("all")
+        days = payload["days"]
+
+        self.assertEqual(len(days), 365)
+        self.assertEqual(days[0]["date"], "2025-08-13")
+        self.assertEqual(days[-1]["date"], "2026-08-12")
+        dates = [day["date"] for day in days]
+        self.assertEqual(dates, sorted(dates))
+        for day in days:
+            self.assertEqual(set(day), {"date", "totalTokens", "requests"})
+        self.assertEqual(payload["meta"]["app"], "all")
+        self.assertFalse(payload["meta"]["stale"])
+        self.assertEqual(payload["meta"]["dataThrough"], "2026-08-12T11:00:00+08:00")
+
+    def test_heatmap_daily_aggregation(self):
+        payload = self.repository.fetch_heatmap("all")
+        by_date = {day["date"]: day for day in payload["days"]}
+
+        self.assertEqual(by_date["2026-08-12"]["requests"], 2)
+        self.assertEqual(by_date["2026-08-12"]["totalTokens"], 185)
+        self.assertEqual(by_date["2026-08-06"]["requests"], 1)
+        self.assertEqual(by_date["2026-08-06"]["totalTokens"], 230)
+        self.assertEqual(by_date["2026-07-14"]["requests"], 1)
+        self.assertEqual(by_date["2026-07-14"]["totalTokens"], 100)
+        self.assertEqual(by_date["2026-07-13"]["requests"], 1)
+        self.assertEqual(by_date["2026-07-13"]["totalTokens"], 2997)
+        self.assertEqual(by_date["2026-08-11"]["requests"], 0)
+        self.assertEqual(by_date["2026-08-11"]["totalTokens"], 0)
+        self.assertEqual(sum(day["requests"] for day in payload["days"]), 5)
+
+    def test_heatmap_app_filter(self):
+        claude = self.repository.fetch_heatmap("claude")
+        codex = self.repository.fetch_heatmap("codex")
+        claude_today = next(day for day in claude["days"] if day["date"] == "2026-08-12")
+        codex_today = next(day for day in codex["days"] if day["date"] == "2026-08-12")
+
+        self.assertEqual(claude["meta"]["app"], "claude")
+        self.assertEqual(claude_today["requests"], 1)
+        self.assertEqual(claude_today["totalTokens"], 65)
+        self.assertEqual(codex_today["requests"], 1)
+        self.assertEqual(codex_today["totalTokens"], 120)
+        self.assertEqual(sum(day["requests"] for day in claude["days"]), 2)
+        self.assertEqual(sum(day["requests"] for day in codex["days"]), 3)
+
+    def test_heatmap_window_boundary(self):
+        connection = sqlite3.connect(str(self.database_path))
+        connection.executemany(
+            """
+            INSERT INTO proxy_request_logs (
+                request_id, provider_id, app_type, model, input_tokens,
+                output_tokens, cache_read_tokens, cache_creation_tokens,
+                total_cost_usd, status_code, created_at
+            ) VALUES (?, 'private-provider', 'codex', 'edge', 10, 0, 0, 0, '0', 200, ?)
+            """,
+            [
+                ("edge-in", epoch(2025, 8, 13, 0)),
+                ("edge-out", epoch(2025, 8, 12, 23)),
+            ],
+        )
+        connection.commit()
+        connection.close()
+
+        payload = self.repository.fetch_heatmap("all")
+        days = payload["days"]
+
+        self.assertEqual(days[0]["date"], "2025-08-13")
+        self.assertEqual(days[0]["requests"], 1)
+        self.assertEqual(days[0]["totalTokens"], 10)
+        self.assertEqual(sum(day["requests"] for day in days), 6)
+
+    def test_heatmap_service_cache_and_stale(self):
+        service = DashboardService(self.repository, refresh_seconds=1)
+        first = service.get_heatmap("all")
+        self.database_path.rename(self.database_path.with_suffix(".moved"))
+
+        stale = service.get_heatmap("all")
+
+        self.assertFalse(first["meta"]["stale"])
+        self.assertTrue(stale["meta"]["stale"])
+        self.assertEqual(
+            stale["meta"]["staleReason"], "database_temporarily_unavailable"
+        )
+        self.assertEqual(stale["days"], first["days"])
+
+    def test_heatmap_rejects_unknown_app(self):
+        service = DashboardService(self.repository)
+        with self.assertRaises(ValueError):
+            service.get_heatmap("gemini")
+        with self.assertRaises(ValueError):
+            self.repository.fetch_heatmap("gemini")
+
+    def test_heatmap_empty_database_returns_zero_days(self):
+        empty_path = Path(self.tempdir.name) / "empty-heatmap.db"
+        connection = sqlite3.connect(str(empty_path))
+        connection.executescript(
+            """
+            PRAGMA user_version = 16;
+            CREATE TABLE proxy_request_logs (
+                app_type TEXT NOT NULL,
+                model TEXT NOT NULL,
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+                total_cost_usd TEXT NOT NULL DEFAULT '0',
+                status_code INTEGER NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+            """
+        )
+        connection.close()
+
+        payload = DashboardRepository(
+            str(empty_path), now_provider=lambda: FIXED_NOW
+        ).fetch_heatmap("all")
+
+        self.assertEqual(len(payload["days"]), 365)
+        self.assertEqual(sum(day["requests"] for day in payload["days"]), 0)
+        self.assertEqual(sum(day["totalTokens"] for day in payload["days"]), 0)
+        self.assertIsNone(payload["meta"]["dataThrough"])
 
 
 if __name__ == "__main__":

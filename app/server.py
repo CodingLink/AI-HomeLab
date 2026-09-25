@@ -260,6 +260,28 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._write_json(HTTPStatus.OK, payload)
             return
 
+        if parsed.path == "/api/v1/heatmap":
+            query = parse_qs(parsed.query)
+            app_filter = query.get("app", ["all"])[0]
+            try:
+                payload = SERVICE.get_heatmap(app_filter)
+            except ValueError:
+                self._write_json(
+                    HTTPStatus.BAD_REQUEST,
+                    {"error": "invalid_filter", "message": "Unsupported dashboard filter"},
+                )
+            except DashboardError:
+                self._write_json(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    {
+                        "error": "data_unavailable",
+                        "message": "CC Switch usage data is temporarily unavailable",
+                    },
+                )
+            else:
+                self._write_json(HTTPStatus.OK, payload)
+            return
+
         if parsed.path.startswith("/api/"):
             self._write_json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
             return
