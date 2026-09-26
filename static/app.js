@@ -82,6 +82,7 @@ const translations = {
     heatmapTitle: "Token 使用热力图",
     heatmapTotal: "最近一年共 {tokens} Token",
     heatmapRequests: "请求",
+    heatmapDayTokens: "当日总 Token",
     heatmapLess: "较少",
     heatmapMore: "较多",
     heatmapTooltipTokens: "{date}：{tokens} Token，{requests} 次请求",
@@ -276,6 +277,7 @@ const translations = {
     heatmapTitle: "Token Usage Heatmap",
     heatmapTotal: "{tokens} tokens in the last year",
     heatmapRequests: "Requests",
+    heatmapDayTokens: "Daily Total Tokens",
     heatmapLess: "Less",
     heatmapMore: "More",
     heatmapTooltipTokens: "{tokens} tokens, {requests} requests on {date}",
@@ -1565,15 +1567,12 @@ function showHeatmapHover(cell) {
   const rows = tooltip.querySelector(".trend-tooltip-rows");
   const tokenRow = document.createElement("p");
   tokenRow.className = "trend-tooltip-row";
-  const tokenDot = document.createElement("span");
-  tokenDot.className = "trend-legend-dot dot-cache";
-  tokenDot.setAttribute("aria-hidden", "true");
   const tokenLabel = document.createElement("span");
-  tokenLabel.textContent = t("totalTokens");
+  tokenLabel.textContent = t("heatmapDayTokens");
   const tokenValue = document.createElement("span");
   tokenValue.className = "trend-tooltip-value";
   tokenValue.textContent = formatCompact(tokens);
-  tokenRow.append(tokenDot, tokenLabel, tokenValue);
+  tokenRow.append(tokenLabel, tokenValue);
   const requestRow = document.createElement("p");
   requestRow.className = "trend-tooltip-row";
   const requestLabel = document.createElement("span");

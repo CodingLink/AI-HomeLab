@@ -150,3 +150,188 @@ class LiveActivityParsingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class IncrementalTrackingTests(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.root = Path(self.tempdir.name)
+
+    def tearDown(self):
+        self.tempdir.cleanup()
+
+    def _collector(self):
+        return LiveActivityCollector(
+            codex_root=self.root / "codex",
+            claude_root=self.root / "claude",
+            now_provider=lambda: NOW,
+            routing_provider=lambda: {"codex": True, "claude": True},
+        )
+
+    @staticmethod
+    def _append(path, events):
+        with path.open("a", encoding="utf-8") as handle:
+            for event in events:
+                handle.write(json.dumps(event) + "\n")
+
+    def test_incremental_append_consumes_only_new_bytes(self):
+        path = self.root / "claude" / "s.jsonl"
+        write_jsonl(
+            path,
+            [{"type": "user", "timestamp": "2026-08-17T05:00:01Z", "message": {"content": "hi"}}],
+        )
+        collector = self._collector()
+        first = collector.collect()
+        self.assertEqual(len(first["activities"]), 1)
+        tracker = collector._trackers[path]
+        self.assertEqual(tracker.offset, path.stat().st_size)
+
+        self._append(
+            path,
+            [{"type": "assistant", "timestamp": "2026-08-17T05:00:05Z",
+              "message": {"model": "claude-opus", "stop_reason": "tool_use",
+                          "usage": {"input_tokens": 10, "output_tokens": 3}}}],
+        )
+        second = collector.collect()
+        self.assertEqual(second["activities"][0]["model"], "claude-opus")
+        self.assertEqual(second["activities"][0]["inputTokens"], 10)
+        self.assertEqual(tracker.offset, path.stat().st_size)
+
+        # A poll with no new bytes changes nothing and keeps the activity.
+        third = collector.collect()
+        self.assertEqual(tracker.offset, path.stat().st_size)
+        self.assertEqual(len(third["activities"]), 1)
+
+    def test_partial_line_is_buffered_until_completed(self):
+        path = self.root / "claude" / "s.jsonl"
+        write_jsonl(
+            path,
+            [{"type": "user", "timestamp": "2026-08-17T05:00:01Z", "message": {"content": "hi"}}],
+        )
+        collector = self._collector()
+        collector.collect()
+        tracker = collector._trackers[path]
+
+        raw = json.dumps({"type": "assistant", "timestamp": "2026-08-17T05:00:05Z",
+                          "message": {"model": "claude-opus", "stop_reason": "end_turn"}})
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(raw[:20])
+        partial = collector.collect()
+        self.assertEqual(len(partial["activities"]), 1)
+        self.assertEqual(tracker.buffer.decode("utf-8"), raw[:20])
+
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(raw[20:] + "\n")
+        completed = collector.collect()
+        self.assertEqual(completed["activities"], [])
+        self.assertEqual(tracker.buffer, b"")
+
+    def test_truncated_file_rebootstraps_without_stale_state(self):
+        path = self.root / "claude" / "s.jsonl"
+        write_jsonl(
+            path,
+            [{"type": "user", "timestamp": "2026-08-17T05:00:01Z", "message": {"content": "hi"}}],
+        )
+        collector = self._collector()
+        self.assertEqual(len(collector.collect()["activities"]), 1)
+
+        path.write_text("", encoding="utf-8")
+        self.assertEqual(collector.collect()["activities"], [])
+
+        self._append(
+            path,
+            [{"type": "user", "timestamp": "2026-08-17T05:00:02Z", "message": {"content": "again"}}],
+        )
+        self.assertEqual(len(collector.collect()["activities"]), 1)
+
+    def test_bootstrap_covers_turn_start_beyond_legacy_512k_window(self):
+        path = self.root / "claude" / "big.jsonl"
+        filler = {"type": "user", "timestamp": "2026-08-17T04:59:59Z",
+                  "message": {"content": [{"type": "tool_result", "content": "x" * 4096}]}}
+        filler_line = json.dumps(filler) + "\n"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as handle:
+            handle.write(json.dumps(
+                {"type": "user", "timestamp": "2026-08-17T05:00:01Z", "message": {"content": "start"}}
+            ) + "\n")
+            while handle.tell() < 700 * 1024:  # turn start is ~700KB from the end
+                handle.write(filler_line)
+            handle.write(json.dumps(
+                {"type": "assistant", "timestamp": "2026-08-17T05:00:05Z",
+                 "message": {"model": "claude-opus", "stop_reason": "tool_use"}}
+            ) + "\n")
+
+        activity = parse_claude_activity(path, NOW)
+
+        self.assertIsNotNone(activity)
+        self.assertEqual(activity["model"], "claude-opus")
+
+    def test_local_command_events_do_not_start_turns(self):
+        prefixes = ("<local-command-stdout>", "<local-command-caveat>", "<command-name>")
+        for is_meta in (True, False, None):
+            for index, prefix in enumerate(prefixes):
+                path = self.root / f"claude-local-{is_meta}-{index}.jsonl"
+                event = {"type": "user", "timestamp": "2026-08-17T05:00:01Z",
+                         "message": {"content": f"{prefix}hidden"}}
+                if is_meta is not None:
+                    event["isMeta"] = is_meta
+                write_jsonl(
+                    path,
+                    [
+                        event,
+                        {"type": "assistant", "timestamp": "2026-08-17T05:00:03Z",
+                         "message": {"model": "claude-opus", "stop_reason": "tool_use"}},
+                    ],
+                )
+                self.assertIsNone(
+                    parse_claude_activity(path, NOW),
+                    msg=f"{prefix} with isMeta={is_meta}",
+                )
+
+    def test_additional_stop_reasons_end_turns(self):
+        for reason in ("end_turn", "max_tokens", "stop_sequence", "refusal"):
+            path = self.root / f"claude-stop-{reason}.jsonl"
+            write_jsonl(
+                path,
+                [
+                    {"type": "user", "timestamp": "2026-08-17T05:00:01Z", "message": {"content": "hi"}},
+                    {"type": "assistant", "timestamp": "2026-08-17T05:00:03Z",
+                     "message": {"model": "claude-opus", "stop_reason": reason}},
+                ],
+            )
+            self.assertIsNone(parse_claude_activity(path, NOW), msg=reason)
+
+        for reason in ("tool_use", "pause_turn"):
+            path = self.root / f"claude-mid-{reason}.jsonl"
+            write_jsonl(
+                path,
+                [
+                    {"type": "user", "timestamp": "2026-08-17T05:00:01Z", "message": {"content": "hi"}},
+                    {"type": "assistant", "timestamp": "2026-08-17T05:00:03Z",
+                     "message": {"model": "claude-opus", "stop_reason": reason}},
+                ],
+            )
+            self.assertIsNotNone(parse_claude_activity(path, NOW), msg=reason)
+
+    def test_sidechain_events_do_not_disturb_main_turn(self):
+        path = self.root / "claude" / "s.jsonl"
+        write_jsonl(
+            path,
+            [
+                {"type": "user", "timestamp": "2026-08-17T05:00:01Z", "message": {"content": "hi"}},
+                {"type": "assistant", "timestamp": "2026-08-17T05:00:03Z",
+                 "message": {"model": "claude-opus", "stop_reason": "tool_use",
+                             "usage": {"input_tokens": 10, "output_tokens": 2}}},
+                # A sub-agent completes mid-turn; its end_turn/model/usage must not leak.
+                {"type": "assistant", "timestamp": "2026-08-17T05:00:06Z", "isSidechain": True,
+                 "message": {"model": "claude-haiku", "stop_reason": "end_turn",
+                             "usage": {"input_tokens": 999, "output_tokens": 999}}},
+            ],
+        )
+
+        activity = parse_claude_activity(path, NOW)
+
+        self.assertIsNotNone(activity)
+        self.assertEqual(activity["model"], "claude-opus")
+        self.assertEqual(activity["inputTokens"], 10)
+        self.assertEqual(activity["outputTokens"], 2)

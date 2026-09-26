@@ -9,16 +9,26 @@ import time
 import unicodedata
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional
+from typing import Any, Callable, Dict, List, Mapping, Optional
 from urllib.parse import quote
 
 
 SCHEMA_VERSION = 1
 POLL_INTERVAL_SECONDS = 1
 STALE_AFTER_SECONDS = 5
-MAX_TAIL_BYTES = 512 * 1024
+BOOTSTRAP_TAIL_BYTES = 4 * 1024 * 1024
 MAX_SESSION_FILES = 6
 MAX_ACTIVE_AGE = timedelta(minutes=30)
+
+# Claude Code writes local slash-command artifacts as user events; unlike real
+# user input they never trigger a model call, so they must not start a turn.
+_CLAUDE_LOCAL_COMMAND_PREFIXES = (
+    "<local-command-stdout>",
+    "<local-command-caveat>",
+    "<command-name>",
+)
+# stop_reason values that end a turn. tool_use/pause_turn are mid-turn.
+_CLAUDE_TURN_END_REASONS = {"end_turn", "max_tokens", "stop_sequence", "refusal"}
 
 
 class LiveActivitySnapshotUnavailable(RuntimeError):
@@ -114,20 +124,6 @@ def read_routing(database_path: Path) -> Dict[str, bool]:
             connection.close()
 
 
-def _tail_lines(path: Path) -> Iterable[str]:
-    try:
-        with path.open("rb") as handle:
-            size = handle.seek(0, os.SEEK_END)
-            start = max(0, size - MAX_TAIL_BYTES)
-            handle.seek(start)
-            data = handle.read(MAX_TAIL_BYTES)
-    except OSError:
-        return []
-    if start:
-        _, _, data = data.partition(b"\n")
-    return data.decode("utf-8", errors="ignore").splitlines()
-
-
 def _event_timestamp(event: Mapping[str, Any]) -> Optional[datetime]:
     timestamp = parse_iso(event.get("timestamp"))
     if timestamp:
@@ -184,61 +180,99 @@ def _activity(
     }
 
 
-def parse_codex_activity(path: Path, now: datetime) -> Optional[Dict[str, Any]]:
-    started_at: Optional[datetime] = None
-    first_token_at: Optional[datetime] = None
-    latest_at: Optional[datetime] = None
-    model: Optional[str] = None
-    usage = {"inputTokens": 0, "outputTokens": 0}
+class _TurnTracker:
+    """Incremental per-file turn state.
 
-    for line in _tail_lines(path):
+    The collector polls session files every second, so instead of re-reading a
+    fixed tail window (which loses the turn-start event once a long turn's tool
+    output pushes it out of the window), each file keeps a persistent tracker:
+    bootstrap once from a generous tail, then consume only appended bytes.
+    """
+
+    app = ""
+
+    def __init__(self) -> None:
+        self.offset = 0
+        self.buffer = b""
+        self.identity: Optional[tuple[int, int]] = None
+        self.started_at: Optional[datetime] = None
+        self.first_token_at: Optional[datetime] = None
+        self.latest_at: Optional[datetime] = None
+        self.model: Optional[str] = None
+        self.usage = {"inputTokens": 0, "outputTokens": 0}
+
+    def reset(self) -> None:
+        self.__init__()
+
+    def _start_turn(self, timestamp: datetime) -> None:
+        self.started_at = timestamp
+        self.first_token_at = None
+        self.usage = {"inputTokens": 0, "outputTokens": 0}
+
+    def _end_turn(self) -> None:
+        self.started_at = None
+        self.first_token_at = None
+
+    def feed_event(self, event: Mapping[str, Any], timestamp: Optional[datetime]) -> None:
+        raise NotImplementedError
+
+    def feed_line(self, line: str) -> None:
         try:
             event = json.loads(line)
         except (TypeError, json.JSONDecodeError):
-            continue
+            return
         if not isinstance(event, Mapping):
-            continue
+            return
         timestamp = _event_timestamp(event)
         if timestamp:
-            latest_at = timestamp
+            self.latest_at = timestamp
+        self.feed_event(event, timestamp)
+
+    def activity(self, now: datetime) -> Optional[Dict[str, Any]]:
+        if (
+            not self.started_at
+            or now - self.started_at > MAX_ACTIVE_AGE
+            or self.latest_at is None
+            or now - self.latest_at > MAX_ACTIVE_AGE
+        ):
+            return None
+        return _activity(
+            self.app, self.model, self.started_at, self.first_token_at, self.usage, now
+        )
+
+
+class _CodexTracker(_TurnTracker):
+    app = "codex"
+
+    def feed_event(self, event: Mapping[str, Any], timestamp: Optional[datetime]) -> None:
         payload = event.get("payload")
         if not isinstance(payload, Mapping):
             payload = event
         event_type = payload.get("type") or event.get("type")
 
         if event_type == "turn_context":
-            model = safe_text(payload.get("model")) or model
+            self.model = safe_text(payload.get("model")) or self.model
         elif event_type == "user_message" and timestamp:
-            started_at = timestamp
-            first_token_at = None
-            usage = {"inputTokens": 0, "outputTokens": 0}
-        elif event_type == "agent_message" and started_at:
+            self._start_turn(timestamp)
+        elif event_type == "agent_message" and self.started_at:
             if payload.get("phase") == "final_answer":
-                started_at = None
-                first_token_at = None
-            elif timestamp and first_token_at is None:
-                first_token_at = timestamp
-        elif event_type == "token_count" and started_at:
+                self._end_turn()
+            elif timestamp and self.first_token_at is None:
+                self.first_token_at = timestamp
+        elif event_type == "token_count" and self.started_at:
             info = payload.get("info")
             last_usage = info.get("last_token_usage") if isinstance(info, Mapping) else None
             parsed_usage = _usage_values(last_usage)
             if parsed_usage["inputTokens"] or parsed_usage["outputTokens"]:
-                usage = parsed_usage
-
-    if (
-        not started_at
-        or now - started_at > MAX_ACTIVE_AGE
-        or latest_at is None
-        or now - latest_at > MAX_ACTIVE_AGE
-    ):
-        return None
-    return _activity("codex", model, started_at, first_token_at, usage, now)
+                self.usage = parsed_usage
 
 
 def _claude_user_starts_turn(message: Any) -> bool:
     if not isinstance(message, Mapping):
         return True
     content = message.get("content")
+    if isinstance(content, str):
+        return not content.lstrip().startswith(_CLAUDE_LOCAL_COMMAND_PREFIXES)
     if not isinstance(content, list):
         return True
     content_types = {
@@ -247,52 +281,59 @@ def _claude_user_starts_turn(message: Any) -> bool:
     return content_types != {"tool_result"}
 
 
-def parse_claude_activity(path: Path, now: datetime) -> Optional[Dict[str, Any]]:
-    started_at: Optional[datetime] = None
-    first_token_at: Optional[datetime] = None
-    latest_at: Optional[datetime] = None
-    model: Optional[str] = None
-    usage = {"inputTokens": 0, "outputTokens": 0}
+class _ClaudeTracker(_TurnTracker):
+    app = "claude"
 
-    for line in _tail_lines(path):
-        try:
-            event = json.loads(line)
-        except (TypeError, json.JSONDecodeError):
-            continue
-        if not isinstance(event, Mapping):
-            continue
-        timestamp = _event_timestamp(event)
-        if timestamp:
-            latest_at = timestamp
+    def feed_event(self, event: Mapping[str, Any], timestamp: Optional[datetime]) -> None:
+        if event.get("isSidechain") is True:
+            # Sub-agent events may refresh latest_at (handled in feed_line) so a
+            # long sub-agent run keeps the main call alive, but they must not
+            # touch the main turn's start/end state, model, or usage.
+            return
         event_type = event.get("type")
         message = event.get("message")
 
         if event_type == "user" and timestamp and _claude_user_starts_turn(message):
-            started_at = timestamp
-            first_token_at = None
-            usage = {"inputTokens": 0, "outputTokens": 0}
-        elif event_type == "assistant" and started_at and isinstance(message, Mapping):
-            model = safe_text(message.get("model")) or model
-            if timestamp and first_token_at is None:
-                first_token_at = timestamp
+            self._start_turn(timestamp)
+        elif event_type == "assistant" and self.started_at and isinstance(message, Mapping):
+            self.model = safe_text(message.get("model")) or self.model
+            if timestamp and self.first_token_at is None:
+                self.first_token_at = timestamp
             parsed_usage = _usage_values(message.get("usage"))
-            usage["inputTokens"] += parsed_usage["inputTokens"]
-            usage["outputTokens"] += parsed_usage["outputTokens"]
-            if message.get("stop_reason") == "end_turn":
-                started_at = None
-                first_token_at = None
+            self.usage["inputTokens"] += parsed_usage["inputTokens"]
+            self.usage["outputTokens"] += parsed_usage["outputTokens"]
+            if message.get("stop_reason") in _CLAUDE_TURN_END_REASONS:
+                self._end_turn()
         elif event_type == "system" and event.get("subtype") == "turn_duration":
-            started_at = None
-            first_token_at = None
+            self._end_turn()
 
-    if (
-        not started_at
-        or now - started_at > MAX_ACTIVE_AGE
-        or latest_at is None
-        or now - latest_at > MAX_ACTIVE_AGE
-    ):
+
+def _parse_with_tracker(
+    tracker: _TurnTracker, path: Path, now: datetime
+) -> Optional[Dict[str, Any]]:
+    """One-shot compatibility wrapper: bootstrap a tracker from the tail."""
+    try:
+        size = path.stat().st_size
+        start = max(0, size - BOOTSTRAP_TAIL_BYTES)
+        with path.open("rb") as handle:
+            handle.seek(start)
+            data = handle.read(BOOTSTRAP_TAIL_BYTES)
+    except OSError:
         return None
-    return _activity("claude", model, started_at, first_token_at, usage, now)
+    if start:
+        _, _, data = data.partition(b"\n")
+    for line in data.decode("utf-8", errors="ignore").splitlines():
+        if line.strip():
+            tracker.feed_line(line)
+    return tracker.activity(now)
+
+
+def parse_codex_activity(path: Path, now: datetime) -> Optional[Dict[str, Any]]:
+    return _parse_with_tracker(_CodexTracker(), path, now)
+
+
+def parse_claude_activity(path: Path, now: datetime) -> Optional[Dict[str, Any]]:
+    return _parse_with_tracker(_ClaudeTracker(), path, now)
 
 
 class LiveActivityCollector:
@@ -314,6 +355,7 @@ class LiveActivityCollector:
             lambda: read_routing(self.database_path)
         )
         self._path_cache: Dict[str, tuple[float, List[Path]]] = {}
+        self._trackers: Dict[Path, _TurnTracker] = {}
 
     def _recent_files(self, app: str) -> List[Path]:
         cached_at, cached_paths = self._path_cache.get(app, (0.0, []))
@@ -329,18 +371,65 @@ class LiveActivityCollector:
         self._path_cache[app] = (time.monotonic(), paths)
         return paths
 
+    @staticmethod
+    def _feed_bytes(tracker: _TurnTracker, data: bytes) -> None:
+        data = tracker.buffer + data
+        parts = data.split(b"\n")
+        tracker.buffer = parts.pop()
+        for raw in parts:
+            line = raw.decode("utf-8", errors="ignore")
+            if line.strip():
+                tracker.feed_line(line)
+
+    def _sync_tracker(self, tracker: _TurnTracker, path: Path) -> None:
+        stat = path.stat()
+        identity = (stat.st_dev, stat.st_ino)
+        if tracker.identity != identity or stat.st_size < tracker.offset:
+            # First sight, rotation, or truncation: re-bootstrap from the tail.
+            tracker.reset()
+            tracker.identity = identity
+            start = max(0, stat.st_size - BOOTSTRAP_TAIL_BYTES)
+            with path.open("rb") as handle:
+                handle.seek(start)
+                data = handle.read(BOOTSTRAP_TAIL_BYTES)
+            if start:
+                _, _, data = data.partition(b"\n")
+            tracker.offset = stat.st_size
+            self._feed_bytes(tracker, data)
+            return
+        if stat.st_size <= tracker.offset:
+            return
+        with path.open("rb") as handle:
+            handle.seek(tracker.offset)
+            data = handle.read(stat.st_size - tracker.offset)
+        tracker.offset = stat.st_size
+        self._feed_bytes(tracker, data)
+
     def collect(self) -> Dict[str, Any]:
         now = self.now_provider().astimezone(timezone.utc)
         routing = self.routing_provider()
         activities: List[Dict[str, Any]] = []
-        parsers = {"codex": parse_codex_activity, "claude": parse_claude_activity}
+        tracker_classes = {"codex": _CodexTracker, "claude": _ClaudeTracker}
+        seen_paths = set()
         for app in ("codex", "claude"):
             if not routing.get(app, False):
                 continue
             for path in self._recent_files(app):
-                activity = parsers[app](path, now)
+                seen_paths.add(path)
+                tracker = self._trackers.get(path)
+                if tracker is None:
+                    tracker = tracker_classes[app]()
+                    self._trackers[path] = tracker
+                try:
+                    self._sync_tracker(tracker, path)
+                except OSError:
+                    continue
+                activity = tracker.activity(now)
                 if activity:
                     activities.append(activity)
+        for path in list(self._trackers):
+            if path not in seen_paths:
+                del self._trackers[path]
         activities.sort(key=lambda item: item["startedAt"], reverse=True)
         return {
             "schemaVersion": SCHEMA_VERSION,
