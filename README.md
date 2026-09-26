@@ -171,10 +171,6 @@ curl http://127.0.0.1:8787/api/v1/health
 # 其余端点:providers / tailscale / clash-verge / openrouter / live-activity
 ```
 
-## 商标说明
-
-最近活动中的 OpenAI Blossom 与 Anthropic 标识仅用于识别对应调用来源。OpenAI 与 Anthropic 的名称及标识归各自权利人所有;HomeDash 与两家公司不存在赞助或背书关系。使用时应同时遵循 [OpenAI 品牌指南](https://openai.com/brand/)与 [Anthropic Press Kit](https://www.anthropic.com/press-kit)。
-
 ## 参考
 
 [界面与功能参考:NodeSeek 帖子](https://www.nodeseek.com/post-810228-2)
